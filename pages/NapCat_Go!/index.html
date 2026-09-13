@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NapCat_Go 管理器</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
+            background: #1e1e2e;
+            color: #cdd6f4;
+            min-height: 100vh;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 1100px;
+            background: #313244;
+            border-radius: 16px;
+            padding: 24px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        /* ---------- 顶部标题栏 ---------- */
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        .header h2 { font-size: 20px; font-weight: 600; }
+
+        /* ---------- 按钮通用 ---------- */
+        .btn {
+            background: rgba(255, 255, 255, 0.08);
+            border: none;
+            color: #cdd6f4;
+            padding: 10px 18px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background 0.2s;
+        }
+
+        .btn:hover { background: rgba(255, 255, 255, 0.18); }
+        .btn-primary { background: #89b4fa; color: #1e1e2e; }
+        .btn-primary:hover { background: #74a8f5; }
+        .btn-danger { background: #f38ba8; color: #1e1e2e; }
+        .btn-danger:hover { background: #ee6f8f; }
+        .btn-sm { padding: 6px 12px; font-size: 12px; }
+
+        /* ---------- 状态卡片网格 ---------- */
+        .status-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 12px;
+        }
+
+        .status-item {
+            background: #45475a;
+            padding: 12px 16px;
+            border-radius: 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            min-width: 0;
+        }
+
+        .status-item .label {
+            font-size: 12px;
+            color: #a6adc8;
+            letter-spacing: 0.5px;
+        }
+
+        .status-item .value {
+            font-size: 14px;
+            font-weight: 600;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .value.ok { color: #a6e3a1; }
+        .value.warn { color: #f9e2af; }
+        .value.err { color: #f38ba8; }
+
+        /* ---------- 工具栏 ---------- */
+        .toolbar {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        /* ---------- 日志区 ---------- */
+        .log-section {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .log-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 13px;
+            color: #a6adc8;
+        }
+
+        .log-container {
+            background: #11111b;
+            border-radius: 10px;
+            padding: 12px 14px;
+            height: 380px;
+            overflow-y: auto;
+            font-family: 'Consolas', 'Cascadia Mono', monospace;
+            font-size: 12px;
+            line-height: 1.6;
+            color: #a6adc8;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        .log-container::-webkit-scrollbar { width: 8px; }
+        .log-container::-webkit-scrollbar-track { background: #11111b; }
+        .log-container::-webkit-scrollbar-thumb {
+            background: #45475a;
+            border-radius: 4px;
+        }
+
+        /* ---------- 配置弹窗 ---------- */
+        .modal {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.6);
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+            padding: 20px;
+        }
+
+        .modal.visible { display: flex; }
+
+        .modal-content {
+            background: #313244;
+            border-radius: 16px;
+            padding: 28px;
+            width: 480px;
+            max-width: 100%;
+            max-height: 90vh;
+            overflow-y: auto;
+            box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+        }
+
+        .modal-content h3 {
+            margin-bottom: 20px;
+            font-size: 18px;
+            border-bottom: 1px solid #45475a;
+            padding-bottom: 12px;
+        }
+
+        .form-section {
+            margin-bottom: 20px;
+        }
+
+        .form-section-title {
+            font-size: 12px;
+            color: #6c7086;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 10px;
+        }
+
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+
+        .form-group { margin-bottom: 14px; }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 6px;
+            font-size: 13px;
+            color: #a6adc8;
+        }
+
+        .form-group input {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid #45475a;
+            border-radius: 8px;
+            background: #1e1e2e;
+            color: #cdd6f4;
+            font-size: 14px;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        .form-group input:focus { border-color: #89b4fa; }
+
+        .form-hint {
+            font-size: 12px;
+            color: #6c7086;
+            margin-top: 4px;
+            line-height: 1.5;
+        }
+
+        .form-hint code {
+            background: #1e1e2e;
+            padding: 1px 6px;
+            border-radius: 4px;
+            font-size: 11px;
+            color: #f9e2af;
+        }
+
+        .form-actions {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+            margin-top: 20px;
+            padding-top: 16px;
+            border-top: 1px solid #45475a;
+        }
+
+        /* ---------- Toast ---------- */
+        .toast {
+            position: fixed;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #45475a;
+            color: #cdd6f4;
+            padding: 12px 20px;
+            border-radius: 8px;
+            font-size: 14px;
+            opacity: 0;
+            transition: opacity 0.3s;
+            pointer-events: none;
+            z-index: 2000;
+            max-width: 80vw;
+            text-align: center;
+        }
+
+        .toast.visible { opacity: 1; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- 标题 -->
+        <div class="header">
+            <h2>NapCat_Go 管理器</h2>
+            <button class="btn btn-primary" id="btn-open-config">配置</button>
+        </div>
+
+        <!-- 状态网格 -->
+        <div class="status-grid">
+            <div class="status-item">
+                <div class="label">运行状态</div>
+                <div class="value" id="s-running">-</div>
+            </div>
+            <div class="status-item">
+                <div class="label">QQ 客户端</div>
+                <div class="value" id="s-qq">-</div>
+            </div>
+            <div class="status-item">
+                <div class="label">NapCat</div>
+                <div class="value" id="s-napcat">-</div>
+            </div>
+            <div class="status-item">
+                <div class="label">NapCat 端口</div>
+                <div class="value" id="s-port">-</div>
+            </div>
+            <div class="status-item">
+                <div class="label">WebUI Token</div>
+                <div class="value" id="s-webui-token">-</div>
+            </div>
+            <div class="status-item">
+                <div class="label">反向 WS Token</div>
+                <div class="value" id="s-reverse-token">-</div>
+            </div>
+            <div class="status-item" style="grid-column: span 2;">
+                <div class="label">反向 WS 地址</div>
+                <div class="value" id="s-reverse-ws">-</div>
+            </div>
+        </div>
+
+        <!-- 工具栏 -->
+        <div class="toolbar">
+            <button class="btn btn-primary" id="btn-toggle-power">启动</button>
+            <button class="btn" id="btn-restart">重启</button>
+            <button class="btn" id="btn-open-webui">在浏览器打开 WebUI</button>
+            <button class="btn" id="btn-cleanup">清理残留进程</button>
+        </div>
+
+        <!-- 日志 -->
+        <div class="log-section">
+            <div class="log-header">
+                <span>NapCat 日志</span>
+                <button class="btn btn-sm" id="btn-clear-log">清屏</button>
+            </div>
+            <div class="log-container" id="log-container"></div>
+        </div>
+    </div>
+
+    <!-- 配置弹窗 -->
+    <div class="modal" id="config-modal">
+        <div class="modal-content">
+            <h3>插件配置</h3>
+
+            <div class="form-section">
+                <div class="form-section-title">反向 WebSocket</div>
+
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>最小端口</label>
+                        <input type="number" id="cfg-min" value="6100" min="1" max="65535">
+                    </div>
+                    <div class="form-group">
+                        <label>最大端口</label>
+                        <input type="number" id="cfg-max" value="6200" min="1" max="65535">
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>反向 WS Token（可选）</label>
+                    <input type="text" id="cfg-token" placeholder="留空则不验证">
+                    <div class="form-hint">
+                        这是 NapCat 与 AstrBot 之间鉴权用的 token，<b>不是</b> WebUI 登录 token。
+                        留空表示不验证。
+                    </div>
+                </div>
+            </div>
+
+            <div class="form-section">
+                <div class="form-section-title">AstrBot 集成</div>
+
+                <div class="form-group">
+                    <label>AstrBot API Key</label>
+                    <input type="password" id="cfg-apikey" placeholder="abk_xxxxxxxx">
+                    <div class="form-hint">
+                        用于自动创建机器人实例。在 AstrBot WebUI → 设置 → API Key 中创建，
+                        需包含 <code>bot</code> scope。
+                    </div>
+                </div>
+            </div>
+
+            <div class="form-section">
+                <div class="form-section-title">下载源</div>
+
+                <div class="form-group">
+                    <label>GitHub 下载镜像（可选）</label>
+                    <input type="text" id="cfg-mirror" placeholder="https://ghfast.top/">
+                    <div class="form-hint">
+                        默认使用 <code>https://ghfast.top/</code> 加速下载 NapCat。
+                        若镜像失败会自动回退到 GitHub 官方源。留空则直连 GitHub。
+                    </div>
+                </div>
+            </div>
+
+            <div class="form-actions">
+                <button class="btn" id="btn-config-cancel">取消</button>
+                <button class="btn btn-primary" id="btn-config-save">保存</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="toast" id="toast"></div>
+
+    <script type="module" src="./bridge.js"></script>
+</body>
+</html>
