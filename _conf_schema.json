@@ -1,0 +1,8 @@
+{
+    "auto_start": {
+        "type": "bool",
+        "description": "插件加载时自动启动 NapCat",
+        "default": false,
+        "hint": "勾选后，AstrBot 启动并加载本插件时会自动拉起 NapCat。修改后需重载插件生效。"
+    }
+}

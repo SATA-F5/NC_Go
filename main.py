@@ -17,8 +17,13 @@ import aiohttp
 
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star
-from astrbot.api.web import json_response, error_response, request
 from astrbot.api import logger
+from astrbot.api.web import json_response, error_response, request
+
+try:
+    from astrbot.api import AstrBotConfig
+except ImportError:
+    AstrBotConfig = dict  # 兼容旧版
 
 from .pulid_api import NapCatAPI
 from .astrbot_api import AstrBotAPI
@@ -274,8 +279,7 @@ class NapCatManager:
                 logger.info(f"尝试从{label}下载: {url}")
                 self._append_log(f"正在从{label}下载 NapCat {version}...")
 
-                # 每一轮都用独立的 SSLContext + Connector + Session，
-                # 避免前一次失败导致连接池关闭，后续请求报 "Session is closed"
+                # 每一轮都用独立的 SSLContext + Connector + Session
                 ssl_ctx = make_ssl_context()
                 connector = aiohttp.TCPConnector(ssl=ssl_ctx)
                 session = aiohttp.ClientSession(connector=connector)
@@ -674,8 +678,9 @@ class NapCatManager:
 # ==================== 插件主体 ====================
 
 class NapCatGoPlugin(Star):
-    def __init__(self, context: Context):
+    def __init__(self, context: Context, config: AstrBotConfig = None):
         super().__init__(context)
+        self.astrbot_config = config
         self.config = self._load_config()
         self.manager = NapCatManager(self)
 
@@ -731,6 +736,7 @@ class NapCatGoPlugin(Star):
             yield event.plain_result(self._get_status_text())
 
         if self.config.get("auto_start", False):
+            logger.info("[NapCat_Go] auto_start=True，准备自动启动 NapCat")
             asyncio.create_task(self.manager.start())
 
     # ---------- API ----------
@@ -857,14 +863,36 @@ class NapCatGoPlugin(Star):
             try:
                 with open(self.config_path, "r", encoding="utf-8") as f:
                     user_config = json.load(f)
-                return {**DEFAULT_CONFIG, **user_config}
+                config = {**DEFAULT_CONFIG, **user_config}
             except Exception as e:
-                logger.error(f"读取配置失败: {e}")
-                return DEFAULT_CONFIG.copy()
+                logger.error(f"读取本地配置失败: {e}")
+                config = DEFAULT_CONFIG.copy()
         else:
             config = DEFAULT_CONFIG.copy()
             self._save_config(config)
-            return config
+
+        # 从 AstrBot 配置面板读取 auto_start，覆盖本地配置
+        try:
+            if self.astrbot_config is not None:
+                # AstrBotConfig 继承自 dict，可直接用 get
+                if hasattr(self.astrbot_config, "get"):
+                    astrbot_auto_start = self.astrbot_config.get("auto_start")
+                else:
+                    astrbot_auto_start = getattr(
+                        self.astrbot_config, "auto_start", None
+                    )
+
+                if astrbot_auto_start is not None:
+                    config["auto_start"] = bool(astrbot_auto_start)
+                    logger.info(
+                        f"[NapCat_Go] 从 AstrBot 配置读取 auto_start = {config['auto_start']}"
+                    )
+            else:
+                logger.info("[NapCat_Go] 未收到 AstrBot 配置，使用本地配置")
+        except Exception as e:
+            logger.warning(f"读取 AstrBot 配置失败（auto_start 使用本地配置）: {e}")
+
+        return config
 
     def _save_config(self, config: Dict[str, Any] = None):
         if config is None:
