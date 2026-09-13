@@ -6,372 +6,400 @@
     <title>NapCat_Go 管理器</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-
         body {
             font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
-            background: #1e1e2e;
-            color: #cdd6f4;
-            min-height: 100vh;
-            padding: 20px;
-            display: flex;
-            justify-content: center;
+            background: #1e1e2e; color: #cdd6f4;
+            min-height: 100vh; padding: 10px;
+            display: flex; justify-content: center;
         }
-
         .container {
-            width: 100%;
-            max-width: 1100px;
-            background: #313244;
-            border-radius: 16px;
-            padding: 24px;
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
-            display: flex;
-            flex-direction: column;
-            gap: 20px;
+            width: 100%; max-width: 920px; background: #313244;
+            border-radius: 12px; padding: 14px;
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+            display: flex; flex-direction: column; gap: 10px;
         }
-
-        /* ---------- 顶部标题栏 ---------- */
         .header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 10px;
+            display: flex; justify-content: space-between;
+            align-items: center; flex-wrap: wrap; gap: 8px;
         }
+        .header h2 { font-size: 15px; font-weight: 600; }
+        .header .subtitle { font-size: 10px; color: #6c7086; margin-top: 2px; }
 
-        .header h2 { font-size: 20px; font-weight: 600; }
-
-        /* ---------- 按钮通用 ---------- */
         .btn {
-            background: rgba(255, 255, 255, 0.08);
-            border: none;
-            color: #cdd6f4;
-            padding: 10px 18px;
-            border-radius: 8px;
-            cursor: pointer;
-            font-size: 14px;
-            transition: background 0.2s;
+            background: rgba(255, 255, 255, 0.08); border: none; color: #cdd6f4;
+            padding: 5px 11px; border-radius: 6px; cursor: pointer;
+            font-size: 11px; transition: background 0.15s;
         }
-
         .btn:hover { background: rgba(255, 255, 255, 0.18); }
         .btn-primary { background: #89b4fa; color: #1e1e2e; }
         .btn-primary:hover { background: #74a8f5; }
         .btn-danger { background: #f38ba8; color: #1e1e2e; }
         .btn-danger:hover { background: #ee6f8f; }
-        .btn-sm { padding: 6px 12px; font-size: 12px; }
+        .btn-sm { padding: 3px 8px; font-size: 10px; }
 
-        /* ---------- 状态卡片网格 ---------- */
-        .status-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-            gap: 12px;
-        }
+        .toolbar { display: flex; gap: 5px; flex-wrap: wrap; }
 
-        .status-item {
+        /* 下载进度面板 */
+        .download-panel {
             background: #45475a;
-            padding: 12px 16px;
-            border-radius: 10px;
-            display: flex;
-            flex-direction: column;
-            gap: 6px;
-            min-width: 0;
-        }
-
-        .status-item .label {
-            font-size: 12px;
-            color: #a6adc8;
-            letter-spacing: 0.5px;
-        }
-
-        .status-item .value {
-            font-size: 14px;
-            font-weight: 600;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-        }
-
-        .value.ok { color: #a6e3a1; }
-        .value.warn { color: #f9e2af; }
-        .value.err { color: #f38ba8; }
-
-        /* ---------- 工具栏 ---------- */
-        .toolbar {
-            display: flex;
-            gap: 8px;
-            flex-wrap: wrap;
-        }
-
-        /* ---------- 日志区 ---------- */
-        .log-section {
-            display: flex;
+            border-left: 3px solid #89b4fa;
+            border-radius: 8px;
+            padding: 10px 12px;
+            display: none;
             flex-direction: column;
             gap: 8px;
         }
+        .download-panel.visible { display: flex; }
+        .download-panel.done { border-left-color: #a6e3a1; }
+        .download-panel.failed { border-left-color: #f38ba8; }
 
-        .log-header {
+        .dl-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            font-size: 13px;
-            color: #a6adc8;
-        }
-
-        .log-container {
-            background: #11111b;
-            border-radius: 10px;
-            padding: 12px 14px;
-            height: 380px;
-            overflow-y: auto;
-            font-family: 'Consolas', 'Cascadia Mono', monospace;
             font-size: 12px;
-            line-height: 1.6;
-            color: #a6adc8;
-            white-space: pre-wrap;
-            word-break: break-all;
+            gap: 8px;
         }
-
-        .log-container::-webkit-scrollbar { width: 8px; }
-        .log-container::-webkit-scrollbar-track { background: #11111b; }
-        .log-container::-webkit-scrollbar-thumb {
-            background: #45475a;
-            border-radius: 4px;
-        }
-
-        /* ---------- 配置弹窗 ---------- */
-        .modal {
-            display: none;
-            position: fixed;
-            inset: 0;
-            background: rgba(0, 0, 0, 0.6);
-            justify-content: center;
-            align-items: center;
-            z-index: 1000;
-            padding: 20px;
-        }
-
-        .modal.visible { display: flex; }
-
-        .modal-content {
-            background: #313244;
-            border-radius: 16px;
-            padding: 28px;
-            width: 480px;
-            max-width: 100%;
-            max-height: 90vh;
-            overflow-y: auto;
-            box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
-        }
-
-        .modal-content h3 {
-            margin-bottom: 20px;
-            font-size: 18px;
-            border-bottom: 1px solid #45475a;
-            padding-bottom: 12px;
-        }
-
-        .form-section {
-            margin-bottom: 20px;
-        }
-
-        .form-section-title {
-            font-size: 12px;
-            color: #6c7086;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            margin-bottom: 10px;
-        }
-
-        .form-row {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 12px;
-        }
-
-        .form-group { margin-bottom: 14px; }
-
-        .form-group label {
-            display: block;
-            margin-bottom: 6px;
-            font-size: 13px;
-            color: #a6adc8;
-        }
-
-        .form-group input {
-            width: 100%;
-            padding: 10px 12px;
-            border: 1px solid #45475a;
-            border-radius: 8px;
-            background: #1e1e2e;
-            color: #cdd6f4;
-            font-size: 14px;
-            outline: none;
-            transition: border-color 0.2s;
-        }
-
-        .form-group input:focus { border-color: #89b4fa; }
-
-        .form-hint {
-            font-size: 12px;
-            color: #6c7086;
-            margin-top: 4px;
-            line-height: 1.5;
-        }
-
-        .form-hint code {
-            background: #1e1e2e;
-            padding: 1px 6px;
-            border-radius: 4px;
-            font-size: 11px;
-            color: #f9e2af;
-        }
-
-        .form-actions {
+        .dl-title {
+            font-weight: 600;
             display: flex;
-            gap: 10px;
-            justify-content: flex-end;
-            margin-top: 20px;
-            padding-top: 16px;
+            align-items: center;
+            gap: 6px;
+        }
+        .dl-title .icon { font-size: 14px; }
+        .dl-mirror {
+            font-family: 'Consolas', monospace;
+            font-size: 10px;
+            color: #a6adc8;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            max-width: 55%;
+        }
+        .dl-progress-bar {
+            height: 6px;
+            background: #1e1e2e;
+            border-radius: 3px;
+            overflow: hidden;
+        }
+        .dl-progress-fill {
+            height: 100%;
+            width: 0%;
+            background: linear-gradient(90deg, #89b4fa, #74a8f5);
+            border-radius: 3px;
+            transition: width 0.3s ease;
+        }
+        .download-panel.done .dl-progress-fill {
+            background: linear-gradient(90deg, #a6e3a1, #8ddb86);
+        }
+        .download-panel.failed .dl-progress-fill {
+            background: linear-gradient(90deg, #f38ba8, #ee6f8f);
+        }
+        .dl-info {
+            display: flex;
+            justify-content: space-between;
+            font-size: 10px;
+            color: #a6adc8;
+            font-family: 'Consolas', monospace;
+        }
+        .dl-info .dl-speed { color: #f9e2af; }
+        .dl-info .dl-percent { color: #89b4fa; font-weight: 600; }
+        .dl-info .dl-size { color: #6c7086; }
+
+        .log-section { display: flex; flex-direction: column; gap: 5px; }
+        .log-header {
+            display: flex; justify-content: space-between;
+            align-items: center; font-size: 10px; color: #a6adc8;
+            letter-spacing: 0.3px;
+        }
+        .log-container {
+            background: #11111b; border-radius: 8px; padding: 8px 10px;
+            height: 240px; overflow-y: auto;
+            font-family: 'Consolas', 'Cascadia Mono', monospace;
+            font-size: 10px; line-height: 1.45; color: #a6adc8;
+            white-space: pre-wrap; word-break: break-all;
+        }
+        .log-container::-webkit-scrollbar { width: 5px; }
+        .log-container::-webkit-scrollbar-thumb { background: #45475a; border-radius: 3px; }
+
+        .status-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 7px;
+        }
+        .status-item {
+            background: #45475a; padding: 7px 9px;
+            border-radius: 8px; min-width: 0;
+            display: flex; flex-direction: column; gap: 3px;
+        }
+        .status-item .label {
+            font-size: 9px; color: #a6adc8;
+            letter-spacing: 0.3px; text-transform: uppercase;
+        }
+        .status-item .value {
+            font-size: 11px; font-weight: 600;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .value.ok { color: #a6e3a1; }
+        .value.warn { color: #f9e2af; }
+        .value.err { color: #f38ba8; }
+        .status-item.full { grid-column: span 2; }
+        .status-item.full .value {
+            white-space: normal; word-break: break-all;
+            font-family: 'Consolas', monospace; font-size: 10px; font-weight: 400;
+            line-height: 1.35;
+        }
+
+        .sub-divider { height: 1px; background: #585b70; margin: 1px 0; }
+        .value.mono-small {
+            font-family: 'Consolas', monospace;
+            font-size: 9px; font-weight: 400;
+            white-space: normal; word-break: break-all;
+            line-height: 1.25;
+        }
+
+        .guide {
+            background: #45475a; border-left: 3px solid #89b4fa;
+            border-radius: 6px; padding: 8px 10px;
+            font-size: 11px; line-height: 1.5; display: none;
+        }
+        .guide.visible { display: block; }
+        .guide.success { border-left-color: #a6e3a1; }
+        .guide.error { border-left-color: #f38ba8; }
+        .guide.warn { border-left-color: #f9e2af; }
+        .guide strong { color: #89b4fa; }
+        .guide.success strong { color: #a6e3a1; }
+        .guide.error strong { color: #f38ba8; }
+        .guide code {
+            background: #1e1e2e; padding: 1px 4px; border-radius: 3px;
+            font-size: 10px; color: #f9e2af; user-select: all;
+        }
+
+        .modal {
+            display: none; position: fixed; inset: 0;
+            background: rgba(0, 0, 0, 0.6);
+            justify-content: center; align-items: center;
+            z-index: 1000; padding: 14px;
+        }
+        .modal.visible { display: flex; }
+        .modal-content {
+            background: #313244; border-radius: 12px; padding: 18px;
+            width: 460px; max-width: 100%; max-height: 90vh;
+            overflow-y: auto; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+        }
+        .modal-content h3 {
+            margin-bottom: 12px; font-size: 14px;
+            border-bottom: 1px solid #45475a; padding-bottom: 8px;
+        }
+        .form-section { margin-bottom: 12px; }
+        .form-section-title {
+            font-size: 10px; color: #6c7086;
+            text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 6px;
+        }
+        .form-group { margin-bottom: 9px; }
+        .form-group label {
+            display: block; margin-bottom: 3px;
+            font-size: 11px; color: #a6adc8;
+        }
+        .form-group input {
+            width: 100%; padding: 6px 9px; border: 1px solid #45475a;
+            border-radius: 6px; background: #1e1e2e; color: #cdd6f4;
+            font-size: 11px; outline: none;
+            font-family: 'Consolas', monospace;
+        }
+        .form-group input:focus { border-color: #89b4fa; }
+        .form-hint {
+            font-size: 10px; color: #6c7086;
+            margin-top: 2px; line-height: 1.4;
+        }
+        .form-hint code {
+            background: #1e1e2e; padding: 1px 4px; border-radius: 3px;
+            font-size: 10px; color: #f9e2af;
+        }
+        .form-actions {
+            display: flex; gap: 7px; justify-content: flex-end;
+            margin-top: 12px; padding-top: 10px;
             border-top: 1px solid #45475a;
         }
 
-        /* ---------- Toast ---------- */
-        .toast {
-            position: fixed;
-            bottom: 30px;
-            left: 50%;
-            transform: translateX(-50%);
-            background: #45475a;
-            color: #cdd6f4;
-            padding: 12px 20px;
-            border-radius: 8px;
-            font-size: 14px;
-            opacity: 0;
-            transition: opacity 0.3s;
-            pointer-events: none;
-            z-index: 2000;
-            max-width: 80vw;
-            text-align: center;
+        .scan-result-item {
+            background: #1e1e2e; border: 1px solid #45475a;
+            border-radius: 6px; padding: 7px 9px;
+            margin-bottom: 5px; cursor: pointer;
+            transition: border-color 0.15s;
         }
+        .scan-result-item:hover { border-color: #89b4fa; }
+        .scan-result-item .dir {
+            font-family: 'Consolas', monospace; font-size: 10px;
+            color: #a6adc8; word-break: break-all;
+        }
+        .scan-result-item .file {
+            font-family: 'Consolas', monospace; font-size: 10px;
+            color: #f9e2af; margin-top: 2px;
+        }
+        .scan-result-empty { font-size: 10px; color: #f38ba8; }
 
+        .toast {
+            position: fixed; bottom: 18px; left: 50%;
+            transform: translateX(-50%);
+            background: #45475a; color: #cdd6f4;
+            padding: 8px 14px; border-radius: 6px; font-size: 11px;
+            opacity: 0; transition: opacity 0.3s; pointer-events: none;
+            z-index: 2000; max-width: 80vw; text-align: center;
+        }
         .toast.visible { opacity: 1; }
+        .toast.ok { background: #a6e3a1; color: #1e1e2e; }
+        .toast.err { background: #f38ba8; color: #1e1e2e; }
     </style>
 </head>
 <body>
     <div class="container">
-        <!-- 标题 -->
         <div class="header">
-            <h2>NapCat_Go 管理器</h2>
-            <button class="btn btn-primary" id="btn-open-config">配置</button>
+            <div>
+                <h2>NapCat_Go 管理器</h2>
+                <div class="subtitle" id="subtitle">加载中...</div>
+            </div>
+            <button class="btn" id="btn-open-config">配置</button>
         </div>
 
-        <!-- 状态网格 -->
-        <div class="status-grid">
-            <div class="status-item">
-                <div class="label">运行状态</div>
-                <div class="value" id="s-running">-</div>
-            </div>
-            <div class="status-item">
-                <div class="label">QQ 客户端</div>
-                <div class="value" id="s-qq">-</div>
-            </div>
-            <div class="status-item">
-                <div class="label">NapCat</div>
-                <div class="value" id="s-napcat">-</div>
-            </div>
-            <div class="status-item">
-                <div class="label">NapCat 端口</div>
-                <div class="value" id="s-port">-</div>
-            </div>
-            <div class="status-item">
-                <div class="label">WebUI Token</div>
-                <div class="value" id="s-webui-token">-</div>
-            </div>
-            <div class="status-item">
-                <div class="label">反向 WS Token</div>
-                <div class="value" id="s-reverse-token">-</div>
-            </div>
-            <div class="status-item" style="grid-column: span 2;">
-                <div class="label">反向 WS 地址</div>
-                <div class="value" id="s-reverse-ws">-</div>
-            </div>
-        </div>
-
-        <!-- 工具栏 -->
         <div class="toolbar">
-            <button class="btn btn-primary" id="btn-toggle-power">启动</button>
-            <button class="btn" id="btn-restart">重启</button>
-            <button class="btn" id="btn-open-webui">在浏览器打开 WebUI</button>
-            <button class="btn" id="btn-cleanup">清理残留进程</button>
+            <button class="btn btn-primary win-only" id="btn-toggle-power">启动</button>
+            <button class="btn win-only" id="btn-restart">重启</button>
+            <button class="btn win-only" id="btn-open-webui">打开 WebUI</button>
+            <button class="btn win-only" id="btn-cleanup">清理进程</button>
+            <button class="btn btn-primary" id="btn-sync">立即同步</button>
+            <button class="btn" id="btn-refresh">重新探测</button>
         </div>
 
-        <!-- 日志 -->
-        <div class="log-section">
+        <!-- 下载进度面板 -->
+        <div class="download-panel" id="download-panel">
+            <div class="dl-header">
+                <div class="dl-title">
+                    <span class="icon" id="dl-icon">⬇️</span>
+                    <span id="dl-title-text">正在下载 NapCat.Shell.zip</span>
+                </div>
+                <div class="dl-mirror" id="dl-mirror"></div>
+            </div>
+            <div class="dl-progress-bar">
+                <div class="dl-progress-fill" id="dl-progress-fill"></div>
+            </div>
+            <div class="dl-info">
+                <span class="dl-percent" id="dl-percent">0%</span>
+                <span class="dl-size" id="dl-size"></span>
+                <span class="dl-speed" id="dl-speed"></span>
+            </div>
+        </div>
+
+        <div class="log-section win-only">
             <div class="log-header">
                 <span>NapCat 日志</span>
                 <button class="btn btn-sm" id="btn-clear-log">清屏</button>
             </div>
             <div class="log-container" id="log-container"></div>
         </div>
+
+        <div class="status-grid">
+            <div class="status-item win-only">
+                <div class="label">NapCat 进程</div>
+                <div class="value" id="s-running">-</div>
+            </div>
+            <div class="status-item win-only">
+                <div class="label">QQ 客户端</div>
+                <div class="value" id="s-qq">-</div>
+            </div>
+            <div class="status-item win-only">
+                <div class="label">QQ 登录</div>
+                <div class="value" id="s-qq-login">-</div>
+            </div>
+            <div class="status-item win-only">
+                <div class="label">NapCat 端口</div>
+                <div class="value" id="s-port">-</div>
+            </div>
+
+            <div class="status-item">
+                <div class="label">WebUI Token</div>
+                <div class="value" id="s-webui-token">-</div>
+                <div class="sub-divider"></div>
+                <div class="label">NapCat 配置文件</div>
+                <div class="value mono-small" id="s-napcat-file">-</div>
+            </div>
+
+            <div class="status-item">
+                <div class="label">AstrBot 机器人</div>
+                <div class="value" id="s-bot-id">-</div>
+            </div>
+            <div class="status-item">
+                <div class="label">反向 WS 端口</div>
+                <div class="value" id="s-bot-port">-</div>
+            </div>
+            <div class="status-item">
+                <div class="label">Token</div>
+                <div class="value" id="s-bot-token">-</div>
+            </div>
+            <div class="status-item">
+                <div class="label">上次同步</div>
+                <div class="value" id="s-last-time">-</div>
+            </div>
+            <div class="status-item full">
+                <div class="label">AstrBot 配置文件</div>
+                <div class="value" id="s-astrbot-path">-</div>
+            </div>
+            <div class="status-item full">
+                <div class="label">NapCat 配置目录</div>
+                <div class="value" id="s-napcat-dir">-</div>
+            </div>
+        </div>
+
+        <div class="guide" id="guide"></div>
     </div>
 
-    <!-- 配置弹窗 -->
     <div class="modal" id="config-modal">
         <div class="modal-content">
             <h3>插件配置</h3>
 
             <div class="form-section">
-                <div class="form-section-title">反向 WebSocket</div>
+                <div class="form-section-title">路径（一般留空自动探测）</div>
 
-                <div class="form-row">
-                    <div class="form-group">
-                        <label>最小端口</label>
-                        <input type="number" id="cfg-min" value="6100" min="1" max="65535">
+                <div class="form-group">
+                    <label>NapCat 配置目录</label>
+                    <input type="text" id="cfg-napcat-dir" placeholder="留空自动探测">
+                    <div class="form-hint">
+                        优先级：<b>手动填写 &gt; 插件目录 &gt; 系统默认</b>。
+                        该目录里应包含 <code>onebot11_*.json</code>。
                     </div>
-                    <div class="form-group">
-                        <label>最大端口</label>
-                        <input type="number" id="cfg-max" value="6200" min="1" max="65535">
-                    </div>
+                    <button class="btn btn-sm" id="btn-scan" style="margin-top:5px;">扫描本机候选路径</button>
+                    <div id="scan-results" style="margin-top:7px;"></div>
                 </div>
 
                 <div class="form-group">
-                    <label>反向 WS Token（可选）</label>
-                    <input type="text" id="cfg-token" placeholder="留空则不验证">
+                    <label>AstrBot 配置文件路径</label>
+                    <input type="text" id="cfg-astrbot-path" placeholder="留空自动探测，通常为 data/cmd_config.json">
+                </div>
+
+                <div class="form-group">
+                    <label>机器人 QQ 号（用于快速登录）</label>
+                    <input type="text" id="cfg-qq-number" placeholder="例如 3877087212">
                     <div class="form-hint">
-                        这是 NapCat 与 AstrBot 之间鉴权用的 token，<b>不是</b> WebUI 登录 token。
-                        留空表示不验证。
+                        填写后启动 NapCat 会自动加 <code>-q &lt;QQ号&gt;</code> 参数实现快速登录，
+                        同时也会用于匹配 <code>onebot11_&lt;QQ号&gt;.json</code>。
                     </div>
                 </div>
             </div>
 
-            <div class="form-section">
-                <div class="form-section-title">AstrBot 集成</div>
-
-                <div class="form-group">
-                    <label>AstrBot API Key</label>
-                    <input type="password" id="cfg-apikey" placeholder="abk_xxxxxxxx">
-                    <div class="form-hint">
-                        用于自动创建机器人实例。在 AstrBot WebUI → 设置 → API Key 中创建，
-                        需包含 <code>bot</code> scope。
-                    </div>
-                </div>
-            </div>
-
-            <div class="form-section">
+            <div class="form-section win-only">
                 <div class="form-section-title">下载源</div>
-
                 <div class="form-group">
                     <label>GitHub 下载镜像（可选）</label>
-                    <input type="text" id="cfg-mirror" placeholder="https://ghfast.top/">
+                    <input type="text" id="cfg-mirror" placeholder="https://gh.zwy.one/">
                     <div class="form-hint">
-                        默认使用 <code>https://ghfast.top/</code> 加速下载 NapCat。
-                        若镜像失败会自动回退到 GitHub 官方源。留空则直连 GitHub。
+                        默认使用最快的镜像。失败会自动切换其他镜像。
                     </div>
                 </div>
             </div>
 
             <div class="form-actions">
                 <button class="btn" id="btn-config-cancel">取消</button>
-                <button class="btn btn-primary" id="btn-config-save">保存</button>
+                <button class="btn btn-primary" id="btn-config-save">保存并同步</button>
             </div>
         </div>
     </div>

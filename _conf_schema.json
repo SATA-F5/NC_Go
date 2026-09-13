@@ -1,8 +1,26 @@
 {
-    "auto_start": {
+    "auto_sync": {
         "type": "bool",
-        "description": "插件加载时自动启动 NapCat",
-        "default": false,
-        "hint": "勾选后，AstrBot 启动并加载本插件时会自动拉起 NapCat。修改后需重载插件生效。"
+        "description": "插件加载时自动同步配置到 NapCat",
+        "default": true,
+        "hint": "开启后，AstrBot 启动加载本插件时会自动把 OneBot v11 机器人配置写入 NapCat 的 onebot11_*.json。"
+    },
+    "napcat_config_dir": {
+        "type": "string",
+        "description": "NapCat 配置目录（留空自动探测）",
+        "default": "",
+        "hint": "填写 NapCat 的 config 目录路径，该目录里应包含 onebot11_*.json。填写后会优先使用此路径，不再自动探测。Windows 例：C:\\Users\\你\\NapCat\\config；Linux 例：/opt/QQ/resources/app/app_launcher/napcat/config"
+    },
+    "astrbot_config_path": {
+        "type": "string",
+        "description": "AstrBot 配置文件路径（留空自动探测）",
+        "default": "",
+        "hint": "通常是 AstrBot 数据目录下的 cmd_config.json。留空自动探测。"
+    },
+    "qq_number": {
+        "type": "string",
+        "description": "机器人 QQ 号（可选）",
+        "default": "",
+        "hint": "用于匹配 onebot11_<QQ号>.json。多个文件时用来精确定位。留空则使用最新的那个。"
     }
 }

@@ -72,14 +72,12 @@ class NapCatAPI:
             ) as resp:
                 if resp.status == 200:
                     return await resp.json(content_type=None)
-                else:
-                    logger.warning(f"NapCat API {path} 返回状态码 {resp.status}")
-                    return None
+                logger.warning(f"NapCat API {path} 返回状态码 {resp.status}")
+                return None
         except Exception as e:
             logger.error(f"请求 NapCat API 异常: {e}")
             return None
 
-    # -------- OneBot 标准 API --------
     async def get_login_info(self) -> Optional[Dict[str, Any]]:
         return await self.request("POST", "/get_login_info")
 
