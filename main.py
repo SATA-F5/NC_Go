@@ -1,8 +1,6 @@
 import asyncio
 import json
 import re
-import socket
-import random
 import platform
 import zipfile
 import subprocess
@@ -31,36 +29,32 @@ except ImportError:
 
 from .pulid_api import NapCatAPI
 
+PLUGIN_CODE_VERSION = "2026-09-16-v11"
 PLUGIN_NAME = "pulid_napcat_go_to_astrbot"
+
+# Bump when config schema / defaults change; triggers light migration
+CONFIG_VERSION = 3
+
 NAPCAT_RELEASE_BASE = "https://github.com/NapNeko/NapCatQQ/releases/download"
 NAPCAT_LINUX_INSTALL_URL = "https://nclatest.znin.net/NapNeko/NapCat-Installer/main/script/install.sh"
-DEFAULT_NAPCAT_VERSION = "v4.17.32"
+DEFAULT_NAPCAT_VERSION = "v4.18.28"
 DEFAULT_DOWNLOAD_MIRROR = "https://gh.zwy.one/"
 
 NAPCAT_MIRROR_CANDIDATES = [
-    "https://gh.zwy.one/",
-    "https://raw.ihtw.moe/",
-    "https://gh.llkk.cc/",
-    "https://gh.xxooo.cf/",
-    "https://ghfile.geekertao.top/",
-    "https://ghproxy.cxkpro.top/",
-    "https://git.yylx.win/",
-    "https://gh.h233.eu.org/",
-    "https://cdn.crashmc.com/",
-    "https://githubproxy.cc/",
-    "https://gh-proxy.com/",
-    "https://ghproxy.net/",
+    "https://gh.zwy.one/", "https://raw.ihtw.moe/", "https://gh.llkk.cc/",
+    "https://gh.xxooo.cf/", "https://ghfile.geekertao.top/", "https://ghproxy.cxkpro.top/",
+    "https://git.yylx.win/", "https://gh.h233.eu.org/", "https://cdn.crashmc.com/",
+    "https://githubproxy.cc/", "https://gh-proxy.com/", "https://ghproxy.net/",
     "https://ghfast.top/",
 ]
 
 IS_WINDOWS = platform.system() == "Windows"
 IS_LINUX = platform.system() == "Linux"
 IS_MACOS = platform.system() == "Darwin"
-IS_UNIX = IS_LINUX or IS_MACOS
 
 DEFAULT_CONFIG = {
     "auto_sync": True,
-    "auto_start": False,
+    "auto_start": True,
     "napcat_port": 6099,
     "napcat_version": DEFAULT_NAPCAT_VERSION,
     "napcat_download_mirror": DEFAULT_DOWNLOAD_MIRROR,
@@ -71,6 +65,36 @@ DEFAULT_CONFIG = {
 
 CREATE_NO_WINDOW = 0x08000000
 
+
+# ============================================================
+# Path resolution
+# ============================================================
+
+def resolve_persistent_dir(context: Any) -> Path:
+    """
+    Resolve the plugin's persistent data directory.
+
+    Normalizes to <astrbot_data>/plugin_data/<plugin_name>/ so the
+    directory survives plugin deletion / reinstall.
+    """
+    candidate: Optional[Path] = None
+    if hasattr(context, "get_data_dir"):
+        try:
+            candidate = Path(context.get_data_dir())
+        except Exception:
+            candidate = None
+    if candidate is None:
+        candidate = Path("data") / "plugin_data" / PLUGIN_NAME
+    else:
+        if candidate.name != PLUGIN_NAME:
+            candidate = candidate / PLUGIN_NAME
+    candidate.mkdir(parents=True, exist_ok=True)
+    return candidate
+
+
+# ============================================================
+# Utility
+# ============================================================
 
 def make_ssl_context() -> ssl.SSLContext:
     ctx = ssl.create_default_context()
@@ -97,15 +121,9 @@ def is_qq_installed() -> bool:
             except Exception:
                 continue
         return False
-
-    for p in [
-        "/opt/QQ/qq",
-        "/opt/QQ/QQ",
-        "/usr/bin/qq",
-        "/usr/local/bin/qq",
-        os.path.expanduser("~/Applications/QQ.app/Contents/MacOS/QQ"),
-        "/Applications/QQ.app/Contents/MacOS/QQ",
-    ]:
+    for p in ["/opt/QQ/qq", "/opt/QQ/QQ", "/usr/bin/qq", "/usr/local/bin/qq",
+              os.path.expanduser("~/Applications/QQ.app/Contents/MacOS/QQ"),
+              "/Applications/QQ.app/Contents/MacOS/QQ"]:
         if os.path.exists(p):
             return True
     return shutil.which("qq") is not None
@@ -117,9 +135,7 @@ def list_pids_by_name(name: str) -> Set[int]:
         try:
             out = subprocess.check_output(
                 ["tasklist", "/FI", f"IMAGENAME eq {name}", "/FO", "CSV", "/NH"],
-                stderr=subprocess.DEVNULL,
-                creationflags=CREATE_NO_WINDOW,
-                timeout=10,
+                stderr=subprocess.DEVNULL, creationflags=CREATE_NO_WINDOW, timeout=10,
             ).decode("utf-8", errors="ignore")
         except Exception:
             return pids
@@ -135,13 +151,10 @@ def list_pids_by_name(name: str) -> Set[int]:
                     continue
     else:
         try:
-            out = subprocess.check_output(
-                ["pgrep", "-f", name], stderr=subprocess.DEVNULL, timeout=10,
-            ).decode()
+            out = subprocess.check_output(["pgrep", "-f", name], stderr=subprocess.DEVNULL, timeout=10).decode()
             for line in out.splitlines():
-                line = line.strip()
-                if line.isdigit():
-                    pids.add(int(line))
+                if line.strip().isdigit():
+                    pids.add(int(line.strip()))
         except Exception:
             pass
     return pids
@@ -150,14 +163,11 @@ def list_pids_by_name(name: str) -> Set[int]:
 def kill_pid_tree(pid: int):
     if IS_WINDOWS:
         try:
-            subprocess.run(
-                ["taskkill", "/F", "/T", "/PID", str(pid)],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                creationflags=CREATE_NO_WINDOW, timeout=10,
-            )
-            logger.debug(f"Killed process tree PID={pid}")
-        except Exception as e:
-            logger.warning(f"taskkill PID {pid} failed: {e}")
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           creationflags=CREATE_NO_WINDOW, timeout=10)
+        except Exception:
+            pass
     else:
         try:
             os.kill(pid, signal.SIGTERM)
@@ -166,9 +176,8 @@ def kill_pid_tree(pid: int):
                 os.kill(pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-            logger.debug(f"Terminated process PID={pid}")
-        except Exception as e:
-            logger.warning(f"kill PID {pid} failed: {e}")
+        except Exception:
+            pass
 
 
 def kill_pids(pids: Set[int]):
@@ -176,15 +185,20 @@ def kill_pids(pids: Set[int]):
         kill_pid_tree(pid)
 
 
+# ============================================================
+# NapCat manager
+# ============================================================
+
 class NapCatManager:
     def __init__(self, plugin: "NapCatGoPlugin"):
         self.plugin = plugin
         self.context = plugin.context
-        if hasattr(self.context, "plugin_dir"):
-            self.plugin_dir = Path(self.context.plugin_dir)
-        else:
-            self.plugin_dir = Path(__file__).parent
-        self.napcat_dir = self.plugin_dir / "napcat"
+        self.plugin_dir = Path(self.context.plugin_dir) if hasattr(self.context, "plugin_dir") else Path(__file__).parent
+
+        self.persistent_dir = resolve_persistent_dir(self.context)
+        self.napcat_dir = self.persistent_dir / "napcat"
+        self.legacy_napcat_dir = self.plugin_dir / "napcat"
+        self.napcat_dir.mkdir(parents=True, exist_ok=True)
 
         self.process: Optional[asyncio.subprocess.Process] = None
         self.napcat_token: str = ""
@@ -195,7 +209,6 @@ class NapCatManager:
         self._downloading = False
         self._qq_logged_in = False
         self._auto_link_done = False
-
         self._pre_existing_qq_pids: Set[int] = set()
         self._launched_pids: Set[int] = set()
 
@@ -203,41 +216,48 @@ class NapCatManager:
         self.log_lines: deque = deque(maxlen=500)
 
         self.download_state: Dict[str, Any] = {
-            "downloading": False,
-            "percent": 0,
-            "downloaded_mb": 0.0,
-            "total_mb": 0.0,
-            "speed_kbps": 0.0,
-            "current_mirror": "",
-            "current_index": 0,
-            "total_mirrors": 0,
-            "phase": "idle",
-            "message": "",
+            "downloading": False, "percent": 0,
+            "downloaded_mb": 0.0, "total_mb": 0.0, "speed_kbps": 0.0,
+            "current_mirror": "", "current_index": 0, "total_mirrors": 0,
+            "phase": "idle", "message": "",
         }
 
+        self._migrate_legacy()
+
+    # ---------- Migration ----------
+
+    def _migrate_legacy(self):
+        if not self.legacy_napcat_dir.exists():
+            return
+        try:
+            new_has_content = any(self.napcat_dir.iterdir())
+        except Exception:
+            new_has_content = False
+        if new_has_content:
+            return
+        logger.info(f"[NapCat_Go] migrating NapCat data: {self.legacy_napcat_dir} -> {self.napcat_dir}")
+        try:
+            shutil.copytree(self.legacy_napcat_dir, self.napcat_dir, dirs_exist_ok=True)
+            logger.info("[NapCat_Go] migration OK")
+            self.log_lines.append(f"[migrate] {self.legacy_napcat_dir} -> {self.napcat_dir}")
+        except Exception as e:
+            logger.error(f"[NapCat_Go] migration failed: {e}")
+
+    # ---------- Files ----------
+
     def _find_entry(self) -> Optional[str]:
-        for name in [
-            "launcher-win10-user.bat",
-            "launcher-win10.bat",
-            "launcher.bat",
-            "launcher-user.sh",
-            "launcher.sh",
-            "napcat.mjs",
-            "index.js",
-        ]:
+        for name in ["launcher-win10-user.bat", "launcher-win10.bat", "launcher.bat",
+                     "launcher-user.sh", "launcher.sh", "napcat.mjs", "index.js"]:
             if (self.napcat_dir / name).exists():
                 return name
         return None
 
     def _find_linux_napcat_install(self) -> Optional[Path]:
-        plugin_path = self.napcat_dir / "NapCat"
-        if plugin_path.exists():
+        if (self.napcat_dir / "NapCat").exists():
             return self.napcat_dir
-        for c in [
-            Path("/usr/local/napcat"),
-            Path("/opt/napcat"),
-            Path.home() / "napcat",
-        ]:
+        if (self.legacy_napcat_dir / "NapCat").exists():
+            return self.legacy_napcat_dir
+        for c in [Path("/usr/local/napcat"), Path("/opt/napcat"), Path.home() / "napcat"]:
             try:
                 if c.exists() and (c / "NapCat").exists():
                     return c
@@ -245,22 +265,23 @@ class NapCatManager:
                 continue
         return None
 
+    # ---------- Process helpers ----------
+
     def _refresh_launched_pids(self):
         try:
             qq_name = "QQ.exe" if IS_WINDOWS else "qq"
-            current_qq = list_pids_by_name(qq_name)
-            self._launched_pids.update(current_qq - self._pre_existing_qq_pids)
+            cur = list_pids_by_name(qq_name)
+            self._launched_pids.update(cur - self._pre_existing_qq_pids)
             if IS_WINDOWS:
                 self._launched_pids.update(list_pids_by_name("NapCatWinBootMain.exe"))
             else:
                 self._launched_pids.update(list_pids_by_name("NapCat"))
-        except Exception as e:
-            logger.debug(f"Refresh launched pids failed: {e}")
+        except Exception:
+            pass
 
     def _cleanup_processes(self):
         self._refresh_launched_pids()
         if self._launched_pids:
-            logger.debug(f"Cleaning up launched pids: {self._launched_pids}")
             kill_pids(self._launched_pids)
             self._launched_pids.clear()
 
@@ -272,6 +293,8 @@ class NapCatManager:
             "phase": "idle", "message": "",
         })
 
+    # ---------- Download ----------
+
     async def download_napcat(self) -> bool:
         if not IS_WINDOWS:
             return True
@@ -281,135 +304,81 @@ class NapCatManager:
         self._reset_download_state()
         self.download_state["downloading"] = True
         self.download_state["phase"] = "downloading"
-
         try:
             version = self.plugin.config.get("napcat_version", DEFAULT_NAPCAT_VERSION)
             filename = "NapCat.Shell.zip"
 
             for local_zip in [
-                self.plugin_dir / "NapCat.Shell.zip",
+                self.napcat_dir / filename,
+                self.napcat_dir / "napcat.shell.zip",
+                self.plugin_dir / filename,
                 self.plugin_dir / "napcat.shell.zip",
-                self.plugin_dir / "napcat.Shell.zip",
-                self.plugin_dir / "NapCat.shell.zip",
             ]:
                 if local_zip.exists():
                     logger.info(f"Found local archive: {local_zip}")
-                    self.download_state["phase"] = "extracting"
-                    self.download_state["message"] = f"Extracting {local_zip.name}"
                     return await self._extract_napcat(local_zip)
 
             official = f"{NAPCAT_RELEASE_BASE}/{version}/{filename}"
             user_mirror = (self.plugin.config.get("napcat_download_mirror") or "").strip()
-
-            mirror_prefixes: List[str] = []
+            prefixes: List[str] = []
             if user_mirror:
-                mirror_prefixes.append(user_mirror)
+                prefixes.append(user_mirror)
             for m in NAPCAT_MIRROR_CANDIDATES:
-                if m not in mirror_prefixes:
-                    mirror_prefixes.append(m)
+                if m not in prefixes:
+                    prefixes.append(m)
 
-            urls: List[Tuple[str, str]] = []
-            for prefix in mirror_prefixes:
-                urls.append((f"{prefix.rstrip('/')}/{official}", prefix))
+            urls = [(f"{p.rstrip('/')}/{official}", p) for p in prefixes]
             urls.append((official, "official"))
-
-            download_path = self.plugin_dir / filename
-            total_mirrors = len(urls)
-            self.download_state["total_mirrors"] = total_mirrors
+            download_path = self.napcat_dir / filename
+            self.download_state["total_mirrors"] = len(urls)
 
             for idx, (url, label) in enumerate(urls, 1):
-                logger.info(f"[{idx}/{total_mirrors}] Trying {label}")
+                logger.info(f"[{idx}/{len(urls)}] Trying {label}")
                 self.download_state["current_mirror"] = label
                 self.download_state["current_index"] = idx
-                self.download_state["percent"] = 0
-                self.download_state["downloaded_mb"] = 0.0
-                self.download_state["total_mb"] = 0.0
-                self.download_state["speed_kbps"] = 0.0
-                self.download_state["message"] = f"Downloading from {label}"
-
                 ssl_ctx = make_ssl_context()
                 connector = aiohttp.TCPConnector(ssl=ssl_ctx)
                 session = aiohttp.ClientSession(connector=connector)
-
                 try:
                     async with session:
-                        async with session.get(
-                            url,
-                            timeout=aiohttp.ClientTimeout(total=None, sock_connect=10, sock_read=30),
-                        ) as resp:
+                        async with session.get(url, timeout=aiohttp.ClientTimeout(total=None, sock_connect=10, sock_read=30)) as resp:
                             if resp.status != 200:
-                                logger.debug(f"{label} -> HTTP {resp.status}")
                                 continue
-
                             total = resp.content_length or 0
                             downloaded = 0
-                            last_percent = -1
-                            start_time = time.time()
-                            last_update_time = start_time
-
+                            start = time.time()
+                            last_update = start
                             with open(download_path, "wb") as f:
                                 async for chunk in resp.content.iter_chunked(1024 * 128):
                                     f.write(chunk)
                                     downloaded += len(chunk)
                                     now = time.time()
-                                    if now - last_update_time >= 0.4:
-                                        elapsed = now - start_time
-                                        speed_kbps = downloaded / elapsed / 1024 if elapsed > 0 else 0
+                                    if now - last_update >= 0.4:
+                                        elapsed = now - start
+                                        speed = downloaded / elapsed / 1024 if elapsed > 0 else 0
                                         self.download_state["downloaded_mb"] = downloaded / 1024 / 1024
-                                        self.download_state["speed_kbps"] = speed_kbps
+                                        self.download_state["speed_kbps"] = speed
                                         if total > 0:
                                             self.download_state["total_mb"] = total / 1024 / 1024
                                             self.download_state["percent"] = downloaded * 100 // total
-                                        last_update_time = now
-                                        if total > 0:
-                                            p = downloaded * 100 // total
-                                            if p != last_percent and p % 20 == 0:
-                                                last_percent = p
-                                                logger.info(f"Download {p}% ({speed_kbps:.0f} KB/s)")
-
-                    logger.info(f"Download finished: {download_path}")
-                    self.download_state["percent"] = 100
-                    self.download_state["phase"] = "extracting"
-                    self.download_state["message"] = "Extracting"
+                                        last_update = now
                     success = await self._extract_napcat(download_path)
                     if success:
                         try:
                             download_path.unlink()
                         except Exception:
                             pass
-                        logger.info(f"Download OK from {label}")
                         self.download_state["phase"] = "done"
-                        self.download_state["message"] = f"Downloaded from {label}"
-                    else:
-                        self.download_state["phase"] = "failed"
-                        self.download_state["message"] = "Extraction failed"
                     return success
-
-                except asyncio.TimeoutError:
-                    logger.debug(f"{label} timeout, next")
-                    try:
-                        if download_path.exists():
-                            download_path.unlink()
-                    except Exception:
-                        pass
-                    continue
                 except Exception as e:
-                    logger.debug(f"{label} failed: {e}, next")
+                    logger.debug(f"{label} failed: {e}")
                     try:
                         if download_path.exists():
                             download_path.unlink()
                     except Exception:
                         pass
                     continue
-
-            logger.error(
-                "All download sources failed. Please download NapCat.Shell.zip manually:\n"
-                f"  {official}\n"
-                f"Place it at:\n"
-                f"  {self.plugin_dir / filename}"
-            )
             self.download_state["phase"] = "failed"
-            self.download_state["message"] = "All sources failed"
             return False
         finally:
             self._downloading = False
@@ -421,10 +390,7 @@ class NapCatManager:
             with zipfile.ZipFile(archive_path, "r") as zf:
                 zf.extractall(self.napcat_dir)
             if not self._find_entry():
-                logger.warning(
-                    f"Entry file not found after extract, contents: "
-                    f"{[p.name for p in self.napcat_dir.iterdir()][:20]}"
-                )
+                logger.warning("Entry file not found after extract")
                 return False
             logger.info(f"Extracted, entry: {self._find_entry()}")
             return True
@@ -435,100 +401,47 @@ class NapCatManager:
     async def install_linux_napcat(self) -> bool:
         install_target = str(self.napcat_dir)
         self.napcat_dir.mkdir(parents=True, exist_ok=True)
-
         logger.info(f"Linux NapCat install target: {install_target}")
-        self.download_state["downloading"] = True
-        self.download_state["phase"] = "downloading"
-        self.download_state["message"] = "Running Linux install script"
-
         script_path = self.napcat_dir / "napcat_install.sh"
-        cmd = (
-            f'curl -fsSL -o "{script_path}" {NAPCAT_LINUX_INSTALL_URL} && '
-            f'NAPCAT_INSTALL_DIR="{install_target}" '
-            f'NAPCAT_PATH="{install_target}" '
-            f'INSTALL_DIR="{install_target}" '
-            f'bash "{script_path}"'
-        )
-        logger.info("Running Linux install script")
-
+        cmd = (f'curl -fsSL -o "{script_path}" {NAPCAT_LINUX_INSTALL_URL} && '
+               f'NAPCAT_INSTALL_DIR="{install_target}" '
+               f'NAPCAT_PATH="{install_target}" '
+               f'INSTALL_DIR="{install_target}" '
+               f'bash "{script_path}"')
         try:
-            proc = await asyncio.create_subprocess_shell(
-                cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-                cwd=str(self.napcat_dir),
-            )
+            proc = await asyncio.create_subprocess_shell(cmd, stdout=asyncio.subprocess.PIPE,
+                                                          stderr=asyncio.subprocess.STDOUT,
+                                                          cwd=str(self.napcat_dir))
             stdout, _ = await proc.communicate()
             output = stdout.decode("utf-8", errors="ignore") if stdout else ""
             for line in output.splitlines()[-40:]:
                 if line.strip():
                     self.log_lines.append(f"[install] {line.strip()}")
-
-            ok_plugin_dir = (self.napcat_dir / "NapCat").exists()
-
-            if not ok_plugin_dir:
-                for d in [Path("/usr/local/napcat"), Path("/opt/napcat")]:
-                    if d.exists() and (d / "NapCat").exists():
-                        logger.info(f"Found default install at {d}, moving to plugin dir")
-                        try:
-                            for item in d.iterdir():
-                                target = self.napcat_dir / item.name
-                                if item.is_dir():
-                                    if target.exists():
-                                        shutil.copytree(item, target, dirs_exist_ok=True)
-                                    else:
-                                        shutil.copytree(item, target)
-                                else:
-                                    shutil.copy2(item, target)
-                            ok_plugin_dir = (self.napcat_dir / "NapCat").exists()
-                            logger.info("Moved NapCat to plugin dir")
-                            break
-                        except Exception as e:
-                            logger.warning(f"Move to plugin dir failed: {e}")
-
+            ok = (self.napcat_dir / "NapCat").exists()
             try:
                 if script_path.exists():
                     script_path.unlink()
             except Exception:
                 pass
-
-            if proc.returncode == 0 and ok_plugin_dir:
-                logger.info(f"Linux NapCat installed at {self.napcat_dir}")
-                self.download_state["phase"] = "done"
-                self.download_state["message"] = f"Installed to {self.napcat_dir}"
-                return True
-
-            logger.warning(
-                f"Auto install failed (rc={proc.returncode}). Run manually:\n"
-                f"  curl -o /tmp/napcat.sh {NAPCAT_LINUX_INSTALL_URL}\n"
-                f"  NAPCAT_INSTALL_DIR={install_target} bash /tmp/napcat.sh"
-            )
-            self.download_state["phase"] = "failed"
-            self.download_state["message"] = "Auto install failed"
-            return False
+            return proc.returncode == 0 and ok
         except Exception as e:
-            logger.error(f"Install script exception: {e}")
-            self.download_state["phase"] = "failed"
-            self.download_state["message"] = f"Exception: {e}"
+            logger.error(f"Install exception: {e}")
             return False
-        finally:
-            self.download_state["downloading"] = False
 
-    async def start(self):
+    # ---------- Lifecycle ----------
+
+    async def start(self) -> bool:
         async with self._lock:
             if self.process and self.process.returncode is None:
                 logger.warning("NapCat is already running")
-                return
-
+                return True
             if not is_qq_installed():
                 logger.error("QQ client not detected")
-                return
+                return False
 
             qq_name = "QQ.exe" if IS_WINDOWS else "qq"
             self._pre_existing_qq_pids = list_pids_by_name(qq_name)
-            logger.debug(f"Pre-existing {qq_name} pids: {self._pre_existing_qq_pids}")
             self._launched_pids.clear()
-
             qq_number = str(self.plugin.config.get("qq_number", "") or "").strip()
 
             if IS_WINDOWS:
@@ -536,96 +449,66 @@ class NapCatManager:
                     logger.info("NapCat not found, downloading...")
                     if not await self.download_napcat():
                         logger.error("NapCat download failed")
-                        return
-
+                        return False
                 launcher = None
-                for name in [
-                    "launcher-win10-user.bat", "launcher-win10.bat",
-                    "launcher.bat", "launcher-user.bat",
-                ]:
+                for name in ["launcher-win10-user.bat", "launcher-win10.bat", "launcher.bat", "launcher-user.bat"]:
                     p = self.napcat_dir / name
                     if p.exists():
                         launcher = p
                         break
                 if not launcher:
-                    logger.error(f"Windows launcher not found in {self.napcat_dir}")
-                    return
-
+                    logger.error(f"Windows launcher not found: {self.napcat_dir}")
+                    return False
                 cmd = ["cmd", "/c", launcher.name]
                 if qq_number:
                     cmd += ["-q", qq_number]
-                    logger.info(f"Starting NapCat with quick login QQ={qq_number}")
-                else:
-                    logger.info("Starting NapCat (no QQ number, will show QR code)")
-
                 cwd = str(self.napcat_dir)
                 creationflags = CREATE_NO_WINDOW
+                logger.info(f"Starting NapCat (Windows): {' '.join(cmd)}")
             else:
                 if not shutil.which("xvfb-run"):
-                    logger.error(
-                        "xvfb-run not found. Install: apt install xvfb  # or yum install xorg-x11-server-Xvfb"
-                    )
-                    return
-
+                    logger.error("xvfb-run not found")
+                    return False
                 linux_dir = self._find_linux_napcat_install()
                 if not linux_dir:
-                    logger.info("NapCat not installed, trying auto install...")
                     await self.install_linux_napcat()
                     linux_dir = self._find_linux_napcat_install()
                     if not linux_dir:
-                        logger.error(
-                            "NapCat not installed. Run manually:\n"
-                            f"  curl -o /tmp/napcat.sh {NAPCAT_LINUX_INSTALL_URL}\n"
-                            f"  NAPCAT_INSTALL_DIR={self.napcat_dir} bash /tmp/napcat.sh"
-                        )
-                        return
-
+                        logger.error("NapCat not installed")
+                        return False
                 napcat_bin = linux_dir / "NapCat"
                 if not napcat_bin.exists():
-                    logger.error(f"NapCat binary not found: {napcat_bin}")
-                    return
+                    return False
                 try:
                     napcat_bin.chmod(0o755)
                 except Exception:
                     pass
-                if not os.access(napcat_bin, os.X_OK):
-                    logger.error(f"{napcat_bin} not executable. Run: sudo chmod +x {napcat_bin}")
-                    return
-
+                cmd = ["xvfb-run", "-a", str(napcat_bin)]
                 if qq_number:
-                    cmd = ["xvfb-run", "-a", str(napcat_bin), "-q", qq_number]
-                    logger.info(f"Starting NapCat with quick login QQ={qq_number}")
-                else:
-                    cmd = ["xvfb-run", "-a", str(napcat_bin)]
-                    logger.info("Starting NapCat (no QQ number, will show QR code)")
-
+                    cmd += ["-q", qq_number]
                 cwd = str(linux_dir)
                 creationflags = 0
+                logger.info(f"Starting NapCat (Linux): {' '.join(cmd)}")
 
             self._auto_link_done = False
             self._qq_logged_in = False
-
             try:
                 self.process = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.STDOUT,
-                    cwd=cwd,
-                    creationflags=creationflags,
+                    *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+                    cwd=cwd, creationflags=creationflags,
                 )
             except Exception as e:
                 logger.error(f"Failed to start NapCat: {e}")
-                return
+                return False
 
             self._log_task = asyncio.create_task(self._read_logs())
             await asyncio.sleep(2)
             self._refresh_launched_pids()
-            logger.debug(f"New pids this run: {self._launched_pids}")
+            return True
 
     async def stop(self):
         async with self._lock:
             if self.process and self.process.returncode is None:
-                logger.info("Stopping NapCat...")
                 try:
                     self.process.terminate()
                     await asyncio.wait_for(self.process.wait(), timeout=5)
@@ -638,7 +521,6 @@ class NapCatManager:
                 except Exception:
                     pass
                 self.process = None
-
             if self._log_task and not self._log_task.done():
                 self._log_task.cancel()
                 try:
@@ -646,14 +528,11 @@ class NapCatManager:
                 except asyncio.CancelledError:
                     pass
                 self._log_task = None
-
             self._cleanup_processes()
             await asyncio.sleep(1.5)
-
             self.napcat_webui_url = ""
             self.napcat_token = ""
             self._qq_logged_in = False
-            logger.info("NapCat stopped")
 
     async def restart(self):
         await self.stop()
@@ -676,18 +555,13 @@ class NapCatManager:
             pass
         self._cleanup_processes()
 
+    # ---------- Logs ----------
+
     async def _read_logs(self):
         assert self.process and self.process.stdout
-        webui_url_pattern = re.compile(
-            r"WebUi\s+User\s+Panel\s+Url:\s*(https?://\S+)", re.IGNORECASE
-        )
-        token_pattern = re.compile(
-            r"(?:token|access[_-]?token|WebUi\s*Token|WebUI\s*Token)[=:\s]+([A-Za-z0-9\-_]+)",
-            re.IGNORECASE,
-        )
-        login_ok_pattern = re.compile(
-            r"(Login Success|login success|登录成功|快速登录成功)", re.IGNORECASE
-        )
+        webui_url_pattern = re.compile(r"WebUi\s+User\s+Panel\s+Url:\s*(https?://\S+)", re.IGNORECASE)
+        token_pattern = re.compile(r"(?:token|access[_-]?token|WebUi\s*Token|WebUI\s*Token)[=:\s]+([A-Za-z0-9\-_]+)", re.IGNORECASE)
+        login_ok_pattern = re.compile(r"(Login Success|login success|登录成功|快速登录成功)", re.IGNORECASE)
 
         def _usable(url: str) -> bool:
             return "[::]" not in url and "0.0.0.0" not in url
@@ -699,12 +573,9 @@ class NapCatManager:
                 break
             if not line:
                 break
-
             text = line.decode("utf-8", errors="ignore").strip()
             if not text:
                 continue
-
-            # NapCat log goes ONLY into plugin log panel, never to AstrBot terminal
             if "接收 <-" not in text and "发送 ->" not in text:
                 self.log_lines.append(text)
 
@@ -723,7 +594,7 @@ class NapCatManager:
                     if tm:
                         self.napcat_token = tm.group(1)
                         self.api.set_token(self.napcat_token)
-                    logger.info(f"NapCat WebUI URL detected")
+                    logger.info("NapCat WebUI URL detected")
                 continue
 
             if not self.napcat_webui_url:
@@ -731,16 +602,13 @@ class NapCatManager:
                 if tm and tm.group(1) != self.napcat_token:
                     self.napcat_token = tm.group(1)
                     self.api.set_token(self.napcat_token)
-                    logger.info("NapCat WebUI token detected")
 
             if not self._qq_logged_in and login_ok_pattern.search(text):
                 self._qq_logged_in = True
                 logger.info("NapCat QQ login detected")
                 if self.plugin.config.get("auto_sync", True) and not self._auto_link_done:
                     self._auto_link_done = True
-                    logger.info("Triggering auto sync")
                     asyncio.create_task(self._auto_sync_later())
-
         self.process = None
 
     async def _auto_sync_later(self):
@@ -749,26 +617,27 @@ class NapCatManager:
             ok, msg = self.plugin.syncer.sync()
             if ok:
                 logger.info(f"Auto sync ok: {msg}")
-            else:
-                logger.warning(f"Auto sync failed: {msg}")
         except Exception as e:
             logger.error(f"Auto sync exception: {e}")
 
+
+# ============================================================
+# Config syncer
+# ============================================================
 
 class ConfigSyncer:
     def __init__(self, plugin: "NapCatGoPlugin"):
         self.plugin = plugin
         self.context = plugin.context
-        if hasattr(self.context, "plugin_dir"):
-            self.plugin_dir = Path(self.context.plugin_dir)
-        else:
-            self.plugin_dir = Path(__file__).parent
+        self.plugin_dir = Path(self.context.plugin_dir) if hasattr(self.context, "plugin_dir") else Path(__file__).parent
+        self.persistent_dir = resolve_persistent_dir(self.context)
+        self.napcat_dir = self.persistent_dir / "napcat"
+        self.legacy_napcat_dir = self.plugin_dir / "napcat"
 
         self.astrbot_config_path: Optional[Path] = None
         self.astrbot_bot: Optional[Dict[str, Any]] = None
         self.napcat_config_dir: Optional[Path] = None
         self.napcat_config_file: Optional[Path] = None
-
         self.last_sync_time: Optional[str] = None
         self.last_sync_ok: bool = False
         self.last_sync_msg: str = "Not synced yet"
@@ -783,7 +652,6 @@ class ConfigSyncer:
         manual = str(self.plugin.config.get("astrbot_config_path", "") or "").strip()
         if manual:
             return Path(manual)
-
         candidates: List[Path] = []
         try:
             candidates.append(self.plugin_dir.parent.parent / "cmd_config.json")
@@ -794,10 +662,7 @@ class ConfigSyncer:
                 candidates.append(Path(self.context.get_data_dir()) / "cmd_config.json")
             except Exception:
                 pass
-        candidates.append(Path("data/cmd_config.json"))
-        candidates.append(Path("../data/cmd_config.json"))
-        candidates.append(Path("../../data/cmd_config.json"))
-
+        candidates += [Path("data/cmd_config.json"), Path("../data/cmd_config.json"), Path("../../data/cmd_config.json")]
         seen = set()
         for c in candidates:
             try:
@@ -820,7 +685,6 @@ class ConfigSyncer:
         except Exception as e:
             logger.error(f"Read AstrBot config failed: {e}")
             return None
-
         for p in cfg.get("platform", []) or []:
             if not isinstance(p, dict):
                 continue
@@ -833,54 +697,31 @@ class ConfigSyncer:
             if host in ("0.0.0.0", "[::]", "::", ""):
                 host = "127.0.0.1"
             token = p.get("ws_reverse_token") or p.get("access_token") or ""
-            return {
-                "id": p.get("id", ""),
-                "host": host,
-                "port": int(port),
-                "path": p.get("ws_reverse_path", "/ws/") or "/ws/",
-                "token": str(token),
-            }
+            return {"id": p.get("id", ""), "host": host, "port": int(port),
+                    "path": p.get("ws_reverse_path", "/ws/") or "/ws/",
+                    "token": str(token)}
         return None
 
     def _find_napcat_config_dir(self) -> Optional[Path]:
         manual = str(self.plugin.config.get("napcat_config_dir", "") or "").strip()
         if manual:
             return Path(manual)
-
-        plugin_candidate = self.plugin_dir / "napcat" / "config"
-        if plugin_candidate.exists() and plugin_candidate.is_dir():
-            if list(plugin_candidate.glob("onebot11*.json")):
-                return plugin_candidate
-
+        for candidate in [self.napcat_dir / "config", self.legacy_napcat_dir / "config"]:
+            if candidate.exists() and candidate.is_dir():
+                if list(candidate.glob("onebot11*.json")):
+                    return candidate
         system = platform.system()
         home = Path.home()
         candidates: List[Path] = []
-
         if system == "Windows":
-            candidates += [
-                home / "NapCat" / "config",
-                home / "Documents" / "NapCat" / "config",
-                Path("C:/NapCat/config"), Path("D:/NapCat/config"),
-                Path("C:/NapNeko/NapCat/config"), Path("D:/NapNeko/NapCat/config"),
-            ]
+            candidates += [home / "NapCat" / "config", home / "Documents" / "NapCat" / "config",
+                           Path("C:/NapCat/config"), Path("D:/NapCat/config")]
         elif system == "Darwin":
-            candidates += [
-                home / "NapCat" / "config",
-                home / "Applications" / "NapCat" / "config",
-                home / "Library" / "Application Support" / "NapCat" / "config",
-                Path("/Applications/NapCat/config"), Path("/usr/local/napcat/config"),
-            ]
+            candidates += [home / "NapCat" / "config", Path("/Applications/NapCat/config"),
+                           Path("/usr/local/napcat/config")]
         else:
-            candidates += [
-                Path("/usr/local/napcat/config"), Path("/opt/napcat/config"),
-                Path("/root/napcat/config"),
-                home / "napcat" / "config", home / "NapCat" / "config",
-            ]
-
-        env_dir = os.environ.get("NAPCAT_CONFIG_DIR")
-        if env_dir:
-            candidates.insert(0, Path(env_dir))
-
+            candidates += [Path("/usr/local/napcat/config"), Path("/opt/napcat/config"),
+                           Path("/root/napcat/config"), home / "napcat" / "config"]
         for c in candidates:
             try:
                 if c.exists() and c.is_dir() and list(c.glob("onebot11*.json")):
@@ -904,43 +745,24 @@ class ConfigSyncer:
                     if c.name == target:
                         return c
             return max(cs, key=lambda p: p.stat().st_mtime)
-        except Exception as e:
-            logger.error(f"Find onebot11 file failed: {e}")
+        except Exception:
             return None
 
     def scan_candidates(self) -> List[Dict[str, str]]:
         results: List[Dict[str, str]] = []
         seen = set()
-        candidates: List[Path] = [self.plugin_dir / "napcat" / "config"]
-
+        candidates = [self.napcat_dir / "config", self.legacy_napcat_dir / "config"]
         home = Path.home()
         system = platform.system()
-
         if system == "Windows":
-            candidates += [
-                home / "NapCat" / "config",
-                home / "Documents" / "NapCat" / "config",
-                Path("C:/NapCat/config"), Path("D:/NapCat/config"),
-                Path("C:/NapNeko/NapCat/config"), Path("D:/NapNeko/NapCat/config"),
-            ]
+            candidates += [home / "NapCat" / "config", home / "Documents" / "NapCat" / "config",
+                           Path("C:/NapCat/config"), Path("D:/NapCat/config")]
         elif system == "Darwin":
-            candidates += [
-                home / "NapCat" / "config",
-                home / "Applications" / "NapCat" / "config",
-                home / "Library" / "Application Support" / "NapCat" / "config",
-                Path("/Applications/NapCat/config"), Path("/usr/local/napcat/config"),
-            ]
+            candidates += [home / "NapCat" / "config", Path("/Applications/NapCat/config"),
+                           Path("/usr/local/napcat/config")]
         else:
-            candidates += [
-                Path("/usr/local/napcat/config"), Path("/opt/napcat/config"),
-                Path("/root/napcat/config"),
-                home / "napcat" / "config", home / "NapCat" / "config",
-            ]
-
-        env_dir = os.environ.get("NAPCAT_CONFIG_DIR")
-        if env_dir:
-            candidates.insert(0, Path(env_dir))
-
+            candidates += [Path("/usr/local/napcat/config"), Path("/opt/napcat/config"),
+                           Path("/root/napcat/config"), home / "napcat" / "config"]
         for c in candidates:
             try:
                 if not c.exists() or not c.is_dir():
@@ -957,29 +779,21 @@ class ConfigSyncer:
 
     def sync(self) -> Tuple[bool, str]:
         self.refresh()
-
         if not self.astrbot_config_path:
             return self._fail("AstrBot config cmd_config.json not found")
-        if not self.astrbot_config_path.exists():
-            return self._fail(f"AstrBot config not exists")
         if not self.astrbot_bot:
             return self._fail("No enabled OneBot v11 bot in AstrBot")
         if not self.napcat_config_dir:
-            return self._fail("NapCat config dir not found, please set manually")
-        if not self.napcat_config_dir.exists():
-            return self._fail(f"NapCat config dir not exists: {self.napcat_config_dir}")
+            return self._fail("NapCat config dir not found")
         if not self.napcat_config_file:
-            return self._fail(f"No onebot11_*.json in {self.napcat_config_dir}")
-
+            return self._fail("No onebot11_*.json found")
         bot = self.astrbot_bot
         ws_url = f"ws://{bot['host']}:{bot['port']}{bot['path']}"
-
         try:
             with open(self.napcat_config_file, "r", encoding="utf-8-sig") as f:
                 config = json.load(f)
         except Exception as e:
-            return self._fail(f"Read {self.napcat_config_file.name} failed: {e}")
-
+            return self._fail(f"Read failed: {e}")
         network = config.setdefault("network", {})
         clients = network.get("websocketClients") or []
         new_clients = []
@@ -992,24 +806,11 @@ class ConfigSyncer:
             new_clients.append(c)
         new_clients.append({"enable": True, "url": ws_url, "token": bot["token"]})
         network["websocketClients"] = new_clients
-
         try:
             with open(self.napcat_config_file, "w", encoding="utf-8") as f:
                 json.dump(config, f, indent=2, ensure_ascii=False)
         except Exception as e:
-            return self._fail(f"Write {self.napcat_config_file.name} failed: {e}")
-
-        try:
-            with open(self.napcat_config_file, "r", encoding="utf-8-sig") as f:
-                verify = json.load(f)
-            vc = verify.get("network", {}).get("websocketClients", [])
-            ok = any(isinstance(c, dict) and c.get("url") == ws_url for c in vc)
-        except Exception:
-            ok = False
-
-        if not ok:
-            return self._fail(f"Verify after write failed")
-
+            return self._fail(f"Write failed: {e}")
         msg = f"Synced to {self.napcat_config_file.name} ({ws_url})"
         self.last_sync_ok = True
         self.last_sync_msg = msg
@@ -1027,31 +828,40 @@ class ConfigSyncer:
         bot = self.astrbot_bot or {}
         return {
             "platform": platform.system(),
-            "is_windows": IS_WINDOWS,
-            "is_linux": IS_LINUX,
-            "is_macos": IS_MACOS,
+            "is_windows": IS_WINDOWS, "is_linux": IS_LINUX, "is_macos": IS_MACOS,
+            "persistent_dir": str(self.persistent_dir),
+            "napcat_data_dir": str(self.napcat_dir),
+            "legacy_napcat_dir": str(self.legacy_napcat_dir) if self.legacy_napcat_dir.exists() else None,
             "astrbot_config_path": str(self.astrbot_config_path) if self.astrbot_config_path else None,
             "astrbot_bot_found": self.astrbot_bot is not None,
-            "astrbot_bot_id": bot.get("id"),
-            "astrbot_bot_host": bot.get("host"),
-            "astrbot_bot_port": bot.get("port"),
-            "astrbot_bot_token": bot.get("token", ""),
+            "astrbot_bot_id": bot.get("id"), "astrbot_bot_host": bot.get("host"),
+            "astrbot_bot_port": bot.get("port"), "astrbot_bot_token": bot.get("token", ""),
             "napcat_config_dir": str(self.napcat_config_dir) if self.napcat_config_dir else None,
             "napcat_config_file": str(self.napcat_config_file) if self.napcat_config_file else None,
-            "last_sync_ok": self.last_sync_ok,
-            "last_sync_msg": self.last_sync_msg,
-            "last_sync_time": self.last_sync_time,
-            "config": self.plugin.config,
+            "last_sync_ok": self.last_sync_ok, "last_sync_msg": self.last_sync_msg,
+            "last_sync_time": self.last_sync_time, "config": self.plugin.config,
         }
 
+
+# ============================================================
+# Plugin entry
+# ============================================================
 
 class NapCatGoPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
         super().__init__(context)
         self.astrbot_config = config
+
+        logger.info(f"[NapCat_Go] ============ CODE VERSION: {PLUGIN_CODE_VERSION} ============")
+
+        self.persistent_dir = resolve_persistent_dir(context)
+        logger.info(f"[NapCat_Go] persistent dir: {self.persistent_dir}")
+
         self.config = self._load_config()
         self.syncer = ConfigSyncer(self)
         self.manager = NapCatManager(self)
+
+        logger.info(f"[NapCat_Go] NapCat data dir: {self.manager.napcat_dir}")
 
         def _reg(route, handler, methods, desc=""):
             try:
@@ -1081,56 +891,44 @@ class NapCatGoPlugin(Star):
         async def napcat_cmd(event: AstrMessageEvent):
             yield event.plain_result(self._status_text())
 
-        # ---------- Auto start / auto sync ----------
-        auto_start = bool(self.config.get("auto_start", False))
-        auto_sync = bool(self.config.get("auto_sync", True))
-        napcat_installed = self.manager.is_installed()
+        logger.info(f"[NapCat_Go] FINAL CONFIG: {self.config}")
 
-        logger.info(
-            f"[NapCat_Go] auto_start={auto_start}, auto_sync={auto_sync}, "
-            f"napcat_installed={napcat_installed}"
-        )
+        auto_start = bool(self.config.get("auto_start", True))
+        auto_sync = bool(self.config.get("auto_sync", True))
+        installed = self.manager.is_installed()
+        logger.info(f"[NapCat_Go] auto_start={auto_start} auto_sync={auto_sync} installed={installed}")
 
         if auto_start:
-            logger.info("[NapCat_Go] Scheduling auto start...")
+            logger.info("[NapCat_Go] scheduling auto start in 3s")
             self._auto_start_task = asyncio.ensure_future(self._auto_start_wrapper())
-        elif auto_sync:
-            # 只在没开 auto_start 时才尝试同步（否则 NapCat 会自动启动并触发同步）
-            if napcat_installed:
-                try:
-                    ok, msg = self.syncer.sync()
-                    if ok:
-                        logger.info(f"[NapCat_Go] Auto sync ok: {msg}")
-                    else:
-                        logger.debug(f"[NapCat_Go] Auto sync skipped: {msg}")
-                except Exception as e:
-                    logger.debug(f"[NapCat_Go] Auto sync exception: {e}")
+        elif auto_sync and installed:
+            try:
+                ok, msg = self.syncer.sync()
+                logger.info(f"[NapCat_Go] immediate sync result: {ok} {msg}")
+            except Exception:
+                pass
 
     async def _auto_start_wrapper(self):
-        """
-        延迟 5 秒后再启动 NapCat，避免与插件初始化 / AstrBot 启动竞争。
-        同时把完整异常栈打出来，方便定位启动失败原因。
-        """
         try:
-            await asyncio.sleep(5)
-            logger.info("[NapCat_Go] auto_start: beginning NapCat start sequence")
-            await self.manager.start()
-            if self.manager.is_running():
+            await asyncio.sleep(3)
+            logger.info("[NapCat_Go] auto_start: beginning start sequence")
+            ok = await self.manager.start()
+            if ok and self.manager.is_running():
                 logger.info("[NapCat_Go] auto_start: NapCat is running")
             else:
-                logger.warning("[NapCat_Go] auto_start: start() returned but NapCat is NOT running")
+                logger.warning(f"[NapCat_Go] auto_start: failed (returned {ok})")
         except asyncio.CancelledError:
-            logger.info("[NapCat_Go] auto_start cancelled")
             raise
         except Exception as e:
             logger.error(f"[NapCat_Go] auto_start failed: {e}", exc_info=True)
 
+    # ---------- API ----------
+
     async def api_status(self):
         try:
             self.syncer.refresh()
-        except Exception as e:
-            logger.debug(f"Status refresh failed: {e}")
-
+        except Exception:
+            pass
         d = self.syncer.status_dict()
         d["running"] = self.manager.is_running()
         d["napcat_installed"] = self.manager.is_installed()
@@ -1139,7 +937,7 @@ class NapCatGoPlugin(Star):
         d["napcat_token"] = self.manager.napcat_token
         d["napcat_port"] = self.manager.napcat_port
         d["download_state"] = dict(self.manager.download_state)
-
+        d["log_count"] = len(self.manager.log_lines)
         qq_logged_in = self.manager._qq_logged_in
         qq_user_id = None
         qq_nickname = ""
@@ -1156,9 +954,8 @@ class NapCatGoPlugin(Star):
                         self.manager._qq_logged_in = True
                     else:
                         qq_logged_in = False
-            except Exception as e:
-                logger.debug(f"Query login info failed: {e}")
-
+            except Exception:
+                pass
         d["qq_logged_in"] = qq_logged_in
         d["qq_user_id"] = qq_user_id
         d["qq_nickname"] = qq_nickname
@@ -1169,7 +966,6 @@ class NapCatGoPlugin(Star):
             ok, msg = self.syncer.sync()
             return json_response({"ok": ok, "message": msg, "status": self.syncer.status_dict()})
         except Exception as e:
-            logger.error(f"Sync exception: {e}")
             return error_response(f"Sync exception: {e}")
 
     async def api_refresh(self):
@@ -1192,7 +988,6 @@ class NapCatGoPlugin(Star):
         payload = await request.json(default={})
         if not isinstance(payload, dict):
             return error_response("Request body must be JSON")
-
         self.config.update({
             "napcat_config_dir": str(payload.get("napcat_config_dir", "") or "").strip(),
             "astrbot_config_path": str(payload.get("astrbot_config_path", "") or "").strip(),
@@ -1203,22 +998,18 @@ class NapCatGoPlugin(Star):
             ),
         })
         self._save_config(self.config)
-
         try:
             ok, msg = self.syncer.sync()
-            return json_response({
-                "ok": True, "sync_ok": ok, "sync_msg": msg,
-                "status": self.syncer.status_dict(),
-            })
+            return json_response({"ok": True, "sync_ok": ok, "sync_msg": msg,
+                                  "status": self.syncer.status_dict()})
         except Exception as e:
-            return json_response({
-                "ok": True, "sync_ok": False, "sync_msg": f"Sync exception: {e}",
-                "status": self.syncer.status_dict(),
-            })
+            return json_response({"ok": True, "sync_ok": False,
+                                  "sync_msg": f"Sync exception: {e}",
+                                  "status": self.syncer.status_dict()})
 
     async def api_start(self):
-        await self.manager.start()
-        return json_response({"ok": True})
+        ok = await self.manager.start()
+        return json_response({"ok": ok})
 
     async def api_stop(self):
         await self.manager.stop()
@@ -1233,9 +1024,7 @@ class NapCatGoPlugin(Star):
             return error_response("Windows does not need install script")
         try:
             ok = await self.manager.install_linux_napcat()
-            if ok:
-                return json_response({"ok": True, "message": "NapCat installed"})
-            return error_response("Auto install failed, see log for manual command")
+            return json_response({"ok": ok})
         except Exception as e:
             return error_response(f"Install failed: {e}")
 
@@ -1247,7 +1036,7 @@ class NapCatGoPlugin(Star):
     async def api_open_webui(self):
         url = self.manager.napcat_webui_url
         if not url:
-            return error_response("WebUI URL not available, start NapCat first")
+            return error_response("WebUI URL not available")
         try:
             webbrowser.open(url)
             return json_response({"ok": True, "url": url})
@@ -1262,84 +1051,156 @@ class NapCatGoPlugin(Star):
         except Exception as e:
             return error_response(f"Cleanup failed: {e}")
 
+    # ---------- Config ----------
+
     def _load_config(self) -> Dict[str, Any]:
-        if hasattr(self.context, "get_data_dir"):
-            data_dir = Path(self.context.get_data_dir())
-        else:
-            data_dir = Path("data")
-        data_dir.mkdir(parents=True, exist_ok=True)
-        self.config_path = data_dir / f"{PLUGIN_NAME}_config.json"
+        self.config_path = self.persistent_dir / "config.json"
 
         config = DEFAULT_CONFIG.copy()
 
+        # 1) Load persisted config
+        persisted_user: Dict[str, Any] = {}
         if self.config_path.exists():
             try:
                 with open(self.config_path, "r", encoding="utf-8-sig") as f:
-                    user = json.load(f)
-                for k in DEFAULT_CONFIG.keys():
-                    if k in user:
-                        config[k] = user[k]
+                    persisted_user = json.load(f)
+                logger.info(f"[NapCat_Go] persistent config loaded: {persisted_user}")
             except Exception as e:
-                logger.error(f"Read local config failed: {e}")
+                logger.error(f"[NapCat_Go] read persistent config failed: {e}")
+                persisted_user = {}
 
-        # AstrBot panel overrides
-        try:
-            if self.astrbot_config is not None:
-                for k in DEFAULT_CONFIG.keys():
-                    try:
-                        v = self.astrbot_config.get(k)
-                    except AttributeError:
+        # 2) Light version migration (no hard reset)
+        stored_version = persisted_user.get("__config_version__", 1)
+        if stored_version < CONFIG_VERSION:
+            logger.info(f"[NapCat_Go] migrating config: v{stored_version} -> v{CONFIG_VERSION}")
+            persisted_user["__config_version__"] = CONFIG_VERSION
+
+        for k in DEFAULT_CONFIG:
+            if k in persisted_user:
+                config[k] = persisted_user[k]
+
+        # 3) AstrBotConfig object (fallback source)
+        obj_cfg: Dict[str, Any] = {}
+        if self.astrbot_config is not None:
+            try:
+                if hasattr(self.astrbot_config, "keys"):
+                    for k in self.astrbot_config.keys():
                         try:
-                            v = self.astrbot_config[k]
+                            obj_cfg[k] = self.astrbot_config[k]
                         except Exception:
-                            v = None
-                    if v is None:
-                        continue
-                    if k in ("auto_sync", "auto_start"):
-                        config[k] = bool(v)
-                    elif k == "napcat_port":
-                        try:
-                            config[k] = int(v)
-                        except (TypeError, ValueError):
                             pass
-                    else:
-                        config[k] = str(v or "").strip()
-        except Exception as e:
-            logger.debug(f"Read AstrBot config failed: {e}")
+                else:
+                    for k in DEFAULT_CONFIG:
+                        try:
+                            obj_cfg[k] = self.astrbot_config[k]
+                        except Exception:
+                            pass
+                logger.info(f"[NapCat_Go] AstrBotConfig object: {obj_cfg}")
+            except Exception as e:
+                logger.warning(f"[NapCat_Go] read AstrBotConfig obj failed: {e}")
 
-        if not self.config_path.exists():
-            self._save_config(config)
+        # 4) Panel config file (highest priority)
+        panel_cfg: Dict[str, Any] = {}
+        panel_path = self._find_panel_config_path()
+        if panel_path:
+            try:
+                with open(panel_path, "r", encoding="utf-8-sig") as f:
+                    panel_cfg = json.load(f)
+                if not isinstance(panel_cfg, dict):
+                    panel_cfg = {}
+                logger.info(f"[NapCat_Go] panel config loaded from {panel_path}: {panel_cfg}")
+            except Exception as e:
+                logger.warning(f"[NapCat_Go] read panel config failed: {e}")
+                panel_cfg = {}
+        else:
+            logger.info("[NapCat_Go] no panel config file found")
 
-        return config
+        # Merge priority: defaults < persisted < obj < panel
+        merged = dict(config)
+        merged.update(obj_cfg)
+        for k, v in panel_cfg.items():
+            if k in DEFAULT_CONFIG and v is not None:
+                merged[k] = v
+
+        final = DEFAULT_CONFIG.copy()
+        for k in DEFAULT_CONFIG:
+            if k in merged and merged[k] is not None:
+                v = merged[k]
+                if k in ("auto_sync", "auto_start"):
+                    final[k] = bool(v)
+                elif k == "napcat_port":
+                    try:
+                        final[k] = int(v)
+                    except (TypeError, ValueError):
+                        pass
+                else:
+                    final[k] = str(v or "").strip()
+
+        # Persist final view (with version marker)
+        to_save = dict(final)
+        to_save["__config_version__"] = CONFIG_VERSION
+        try:
+            self.config_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.config_path, "w", encoding="utf-8") as f:
+                json.dump(to_save, f, indent=2, ensure_ascii=False)
+        except Exception:
+            pass
+
+        return final
+
+    def _find_panel_config_path(self) -> Optional[Path]:
+        candidates: List[Path] = []
+        try:
+            data_root = self.plugin_dir.parent.parent
+            candidates.append(data_root / "config" / f"{PLUGIN_NAME}_config.json")
+            candidates.append(data_root / f"{PLUGIN_NAME}_config.json")
+            candidates.append(data_root / "config" / f"astrbot_plugin_{PLUGIN_NAME}_config.json")
+        except Exception:
+            pass
+        if hasattr(self.context, "get_data_dir"):
+            try:
+                gd = Path(self.context.get_data_dir())
+                candidates.append(gd / "config" / f"{PLUGIN_NAME}_config.json")
+                candidates.append(gd / f"{PLUGIN_NAME}_config.json")
+            except Exception:
+                pass
+        seen = set()
+        for c in candidates:
+            try:
+                ap = c.resolve()
+            except Exception:
+                continue
+            if ap in seen:
+                continue
+            seen.add(ap)
+            if ap.exists() and ap.is_file():
+                return ap
+        return None
 
     def _save_config(self, config: Dict[str, Any] = None):
         if config is None:
             config = self.config
         try:
+            to_save = dict(config)
+            to_save["__config_version__"] = CONFIG_VERSION
             self.config_path.parent.mkdir(parents=True, exist_ok=True)
             with open(self.config_path, "w", encoding="utf-8") as f:
-                json.dump(config, f, indent=2, ensure_ascii=False)
+                json.dump(to_save, f, indent=2, ensure_ascii=False)
         except Exception as e:
             logger.error(f"Save config failed: {e}")
 
     def _status_text(self) -> str:
         s = self.syncer.status_dict()
         lines = ["NapCat_Go Status", "-" * 20, f"Platform: {s['platform']}"]
-        lines.append(f"NapCat process: {'running' if self.manager.is_running() else 'stopped'}")
+        lines.append(f"NapCat: {'running' if self.manager.is_running() else 'stopped'}")
         lines.append(f"QQ login: {'yes' if self.manager._qq_logged_in else 'no'}")
-        if s["astrbot_bot_found"]:
-            lines.append(f"AstrBot bot: {s['astrbot_bot_id']}")
-            lines.append(f"Reverse WS: ws://{s['astrbot_bot_host']}:{s['astrbot_bot_port']}/ws/")
-        else:
-            lines.append("AstrBot bot: not found")
-        lines.append(f"NapCat config dir: {s['napcat_config_dir'] or 'not found'}")
-        lines.append(f"Last sync: {s['last_sync_time'] or 'never'}")
-        lines.append(f"Status: {'OK' if s['last_sync_ok'] else 'FAIL'} {s['last_sync_msg']}")
+        lines.append(f"Persistent dir: {self.persistent_dir}")
+        lines.append(f"NapCat dir: {self.manager.napcat_dir}")
+        lines.append(f"auto_start: {self.config.get('auto_start')}")
         return "\n".join(lines)
 
     async def terminate(self):
         logger.info("NapCat_Go plugin unloading...")
-        # 取消未执行的自动启动
         task = getattr(self, "_auto_start_task", None)
         if task and not task.done():
             task.cancel()
@@ -1356,3 +1217,9 @@ class NapCatGoPlugin(Star):
             except Exception:
                 pass
         logger.info("NapCat_Go plugin unloaded")
+
+    @property
+    def plugin_dir(self) -> Path:
+        if hasattr(self.context, "plugin_dir"):
+            return Path(self.context.plugin_dir)
+        return Path(__file__).parent
