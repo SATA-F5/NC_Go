@@ -4,7 +4,7 @@
 
 ## 前置要求
 
-1. 已安装 **QQNT 9.9.27+**（Windows 版）
+1. 已安装 **QQNT 9.9.27+**
 2. Python 环境（AstrBot 自带），已安装 `aiohttp`
 3. 已经创建好机器人了
 
