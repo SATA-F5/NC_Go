@@ -29,15 +29,13 @@ except ImportError:
 
 from .pulid_api import NapCatAPI
 
-PLUGIN_CODE_VERSION = "2026-09-16-v11"
+PLUGIN_CODE_VERSION = "2026-09-21-v16-universal"
 PLUGIN_NAME = "pulid_napcat_go_to_astrbot"
-
-# Bump when config schema / defaults change; triggers light migration
 CONFIG_VERSION = 3
 
 NAPCAT_RELEASE_BASE = "https://github.com/NapNeko/NapCatQQ/releases/download"
 NAPCAT_LINUX_INSTALL_URL = "https://nclatest.znin.net/NapNeko/NapCat-Installer/main/script/install.sh"
-DEFAULT_NAPCAT_VERSION = "v4.18.28"
+DEFAULT_NAPCAT_VERSION = "v4.17.32"
 DEFAULT_DOWNLOAD_MIRROR = "https://gh.zwy.one/"
 
 NAPCAT_MIRROR_CANDIDATES = [
@@ -71,12 +69,6 @@ CREATE_NO_WINDOW = 0x08000000
 # ============================================================
 
 def resolve_persistent_dir(context: Any) -> Path:
-    """
-    Resolve the plugin's persistent data directory.
-
-    Normalizes to <astrbot_data>/plugin_data/<plugin_name>/ so the
-    directory survives plugin deletion / reinstall.
-    """
     candidate: Optional[Path] = None
     if hasattr(context, "get_data_dir"):
         try:
@@ -224,8 +216,6 @@ class NapCatManager:
 
         self._migrate_legacy()
 
-    # ---------- Migration ----------
-
     def _migrate_legacy(self):
         if not self.legacy_napcat_dir.exists():
             return
@@ -242,8 +232,6 @@ class NapCatManager:
             self.log_lines.append(f"[migrate] {self.legacy_napcat_dir} -> {self.napcat_dir}")
         except Exception as e:
             logger.error(f"[NapCat_Go] migration failed: {e}")
-
-    # ---------- Files ----------
 
     def _find_entry(self) -> Optional[str]:
         for name in ["launcher-win10-user.bat", "launcher-win10.bat", "launcher.bat",
@@ -264,8 +252,6 @@ class NapCatManager:
             except Exception:
                 continue
         return None
-
-    # ---------- Process helpers ----------
 
     def _refresh_launched_pids(self):
         try:
@@ -292,8 +278,6 @@ class NapCatManager:
             "current_mirror": "", "current_index": 0, "total_mirrors": 0,
             "phase": "idle", "message": "",
         })
-
-    # ---------- Download ----------
 
     async def download_napcat(self) -> bool:
         if not IS_WINDOWS:
@@ -428,8 +412,6 @@ class NapCatManager:
             logger.error(f"Install exception: {e}")
             return False
 
-    # ---------- Lifecycle ----------
-
     async def start(self) -> bool:
         async with self._lock:
             if self.process and self.process.returncode is None:
@@ -554,8 +536,6 @@ class NapCatManager:
         except Exception:
             pass
         self._cleanup_processes()
-
-    # ---------- Logs ----------
 
     async def _read_logs(self):
         assert self.process and self.process.stdout
@@ -863,6 +843,7 @@ class NapCatGoPlugin(Star):
 
         logger.info(f"[NapCat_Go] NapCat data dir: {self.manager.napcat_dir}")
 
+        # ---------- Web API ----------
         def _reg(route, handler, methods, desc=""):
             try:
                 context.register_web_api(route, handler, methods, desc)
@@ -886,11 +867,6 @@ class NapCatGoPlugin(Star):
         _reg(f"/{PLUGIN_NAME}/open-webui", self.api_open_webui, ["POST"], "Open WebUI")
         _reg(f"/{PLUGIN_NAME}/cleanup", self.api_cleanup, ["POST"], "Cleanup")
 
-        @filter.command("napcat")
-        @filter.permission_type(filter.PermissionType.ADMIN)
-        async def napcat_cmd(event: AstrMessageEvent):
-            yield event.plain_result(self._status_text())
-
         logger.info(f"[NapCat_Go] FINAL CONFIG: {self.config}")
 
         auto_start = bool(self.config.get("auto_start", True))
@@ -907,6 +883,19 @@ class NapCatGoPlugin(Star):
                 logger.info(f"[NapCat_Go] immediate sync result: {ok} {msg}")
             except Exception:
                 pass
+
+    # ---------- /napcat 指令 ----------
+
+    @filter.command("napcat")
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    async def napcat_cmd(self, event: AstrMessageEvent):
+        """显示 NapCat 插件状态"""
+        try:
+            yield event.plain_result(self._status_text())
+        except Exception as e:
+            logger.error(f"[NapCat_Go] napcat_cmd failed: {e}", exc_info=True)
+
+    # ---------- auto start ----------
 
     async def _auto_start_wrapper(self):
         try:
@@ -1055,10 +1044,8 @@ class NapCatGoPlugin(Star):
 
     def _load_config(self) -> Dict[str, Any]:
         self.config_path = self.persistent_dir / "config.json"
-
         config = DEFAULT_CONFIG.copy()
 
-        # 1) Load persisted config
         persisted_user: Dict[str, Any] = {}
         if self.config_path.exists():
             try:
@@ -1069,7 +1056,6 @@ class NapCatGoPlugin(Star):
                 logger.error(f"[NapCat_Go] read persistent config failed: {e}")
                 persisted_user = {}
 
-        # 2) Light version migration (no hard reset)
         stored_version = persisted_user.get("__config_version__", 1)
         if stored_version < CONFIG_VERSION:
             logger.info(f"[NapCat_Go] migrating config: v{stored_version} -> v{CONFIG_VERSION}")
@@ -1079,7 +1065,6 @@ class NapCatGoPlugin(Star):
             if k in persisted_user:
                 config[k] = persisted_user[k]
 
-        # 3) AstrBotConfig object (fallback source)
         obj_cfg: Dict[str, Any] = {}
         if self.astrbot_config is not None:
             try:
@@ -1099,7 +1084,6 @@ class NapCatGoPlugin(Star):
             except Exception as e:
                 logger.warning(f"[NapCat_Go] read AstrBotConfig obj failed: {e}")
 
-        # 4) Panel config file (highest priority)
         panel_cfg: Dict[str, Any] = {}
         panel_path = self._find_panel_config_path()
         if panel_path:
@@ -1115,7 +1099,6 @@ class NapCatGoPlugin(Star):
         else:
             logger.info("[NapCat_Go] no panel config file found")
 
-        # Merge priority: defaults < persisted < obj < panel
         merged = dict(config)
         merged.update(obj_cfg)
         for k, v in panel_cfg.items():
@@ -1136,7 +1119,6 @@ class NapCatGoPlugin(Star):
                 else:
                     final[k] = str(v or "").strip()
 
-        # Persist final view (with version marker)
         to_save = dict(final)
         to_save["__config_version__"] = CONFIG_VERSION
         try:
