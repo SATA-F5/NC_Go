@@ -4,6 +4,7 @@ const $ = (id) => document.getElementById(id);
 
 const els = {
     subtitle: $('subtitle'),
+    powerLabel: $('power-label'),
     running: $('s-running'),
     qq: $('s-qq'),
     qqLogin: $('s-qq-login'),
@@ -15,20 +16,13 @@ const els = {
     lastTime: $('s-last-time'),
     astrbotPath: $('s-astrbot-path'),
     napcatDir: $('s-napcat-dir'),
-    napcatFile: $('s-napcat-file'),
     guide: $('guide'),
     modal: $('config-modal'),
     toast: $('toast'),
     logContainer: $('log-container'),
-    // 下载面板
-    downloadPanel: $('download-panel'),
-    dlIcon: $('dl-icon'),
-    dlTitleText: $('dl-title-text'),
-    dlMirror: $('dl-mirror'),
-    dlProgressFill: $('dl-progress-fill'),
-    dlPercent: $('dl-percent'),
-    dlSize: $('dl-size'),
-    dlSpeed: $('dl-speed'),
+    logCount: $('log-count'),
+    webuiDetails: $('webui-details'),
+    webuiSummary: $('btn-open-webui-summary'),
 };
 
 let bridge = null;
@@ -38,11 +32,12 @@ let logOffset = 0;
 let statusFetching = false;
 let logFetching = false;
 let isWindows = false;
-let downloadHideTimer = null;
+let lastStatus = null;
 
-const STATUS_INTERVAL = 2000;   // 加快轮询，让下载进度更实时
+const STATUS_INTERVAL = 3000;
 const LOG_INTERVAL = 3000;
-const MAX_LOG_LINES = 500;
+const MAX_LOG_LINES = 1000;
+const LOCAL_HOSTS = ['127.0.0.1', 'localhost', '0.0.0.0', '[::]', '::'];
 
 function escapeHtml(s) {
     return String(s)
@@ -56,6 +51,170 @@ function toast(message, duration = 2500, kind = '') {
     els.toast.className = 'toast' + (kind ? ' ' + kind : '');
     els.toast.classList.add('visible');
     setTimeout(() => els.toast.classList.remove('visible'), duration);
+}
+
+// ============================================================
+// 把 URL 里的 127.0.0.1/localhost 替换为当前访问 AstrBot 的 hostname
+// ============================================================
+function rewriteUrlForCurrentHost(url) {
+    if (!url) return url;
+    const currentHost = window.location.hostname;
+    if (!currentHost) return url;
+
+    try {
+        const u = new URL(url);
+        if (LOCAL_HOSTS.includes(u.hostname)) {
+            u.hostname = currentHost;
+        }
+        return u.toString();
+    } catch (e) {
+        return String(url).replace(
+            /127\.0\.0\.1|localhost|0\.0\.0\.0|\[::\]/g,
+            currentHost
+        );
+    }
+}
+
+// ============================================================
+// 通用的"打开 URL"提示框
+// ============================================================
+function showUrlDialog(title, url, hint) {
+    // 移除旧的
+    const old = document.getElementById('napcat-url-dialog');
+    if (old) old.remove();
+
+    const dialog = document.createElement('div');
+    dialog.id = 'napcat-url-dialog';
+    dialog.style.cssText = `
+        position: fixed; inset: 0;
+        background: rgba(0,0,0,0.65);
+        display: flex; justify-content: center; align-items: center;
+        z-index: 3000; padding: 20px;
+    `;
+
+    const box = document.createElement('div');
+    box.style.cssText = `
+        background: #313244; border-radius: 12px; padding: 22px;
+        width: 520px; max-width: 100%;
+        box-shadow: 0 12px 40px rgba(0,0,0,0.6);
+        color: #cdd6f4;
+    `;
+
+    const titleEl = document.createElement('div');
+    titleEl.textContent = title || '打开 WebUI';
+    titleEl.style.cssText = 'font-size: 15px; font-weight: 600; margin-bottom: 14px;';
+
+    const hintEl = document.createElement('div');
+    hintEl.textContent = hint || '如果浏览器没有自动打开新标签页，请复制下面的地址，粘贴到你自己的浏览器里打开。';
+    hintEl.style.cssText = 'font-size: 12px; color: #a6adc8; line-height: 1.6; margin-bottom: 12px;';
+
+    const urlBox = document.createElement('textarea');
+    urlBox.value = url;
+    urlBox.readOnly = true;
+    urlBox.style.cssText = `
+        width: 100%; min-height: 72px;
+        background: #1e1e2e; color: #f9e2af;
+        border: 1px solid #45475a; border-radius: 8px;
+        padding: 10px 12px; font-family: Consolas, monospace;
+        font-size: 12px; line-height: 1.5;
+        resize: vertical; outline: none;
+    `;
+
+    const btnRow = document.createElement('div');
+    btnRow.style.cssText = 'display:flex; gap:8px; justify-content:flex-end; margin-top:16px;';
+
+    const btnCopy = document.createElement('button');
+    btnCopy.textContent = '复制地址';
+    btnCopy.className = 'btn btn-primary';
+    btnCopy.onclick = async () => {
+        try {
+            await navigator.clipboard.writeText(url);
+            toast('已复制到剪贴板', 1500, 'ok');
+        } catch (e) {
+            // 老浏览器降级
+            urlBox.select();
+            document.execCommand('copy');
+            toast('已复制（请手动 Ctrl+C）', 2000, 'ok');
+        }
+    };
+
+    const btnRetry = document.createElement('button');
+    btnRetry.textContent = '再次尝试打开';
+    btnRetry.className = 'btn';
+    btnRetry.onclick = () => {
+        tryOpenUrl(url);
+    };
+
+    const btnClose = document.createElement('button');
+    btnClose.textContent = '关闭';
+    btnClose.className = 'btn';
+    btnClose.onclick = () => dialog.remove();
+
+    btnRow.appendChild(btnRetry);
+    btnRow.appendChild(btnCopy);
+    btnRow.appendChild(btnClose);
+
+    box.appendChild(titleEl);
+    box.appendChild(hintEl);
+    box.appendChild(urlBox);
+    box.appendChild(btnRow);
+    dialog.appendChild(box);
+
+    dialog.addEventListener('click', (e) => {
+        if (e.target === dialog) dialog.remove();
+    });
+
+    document.body.appendChild(dialog);
+    urlBox.focus();
+    urlBox.select();
+}
+
+// ============================================================
+// 尝试用多种方式打开 URL（不涉及后端）
+// ============================================================
+function tryOpenUrl(url) {
+    let opened = false;
+
+    // 方式 1: <a target="_blank"> 点击
+    try {
+        const a = document.createElement('a');
+        a.href = url;
+        a.target = '_blank';
+        a.rel = 'noopener noreferrer';
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => {
+            try { document.body.removeChild(a); } catch (e) {}
+        }, 100);
+        opened = true;
+    } catch (e) {
+        console.warn('[napcat] a.click 失败:', e);
+    }
+
+    // 方式 2: window.open
+    if (!opened) {
+        try {
+            const w = window.open(url, '_blank');
+            if (w && !w.closed) opened = true;
+        } catch (e) {
+            console.warn('[napcat] window.open 失败:', e);
+        }
+    }
+
+    // 方式 3: 从顶层窗口打开（同源时可行）
+    if (!opened) {
+        try {
+            if (window.top && window.top !== window) {
+                window.top.open(url, '_blank');
+                opened = true;
+            }
+        } catch (e) {
+            console.warn('[napcat] window.top.open 失败:', e);
+        }
+    }
+
+    return opened;
 }
 
 async function initBridge() {
@@ -72,6 +231,7 @@ async function initBridge() {
         return;
     }
     await refreshStatus();
+    await refreshLogs();
     statusTimer = setInterval(refreshStatus, STATUS_INTERVAL);
     logTimer = setInterval(refreshLogs, LOG_INTERVAL);
     console.log('[napcat] 轮询已启动');
@@ -82,6 +242,7 @@ async function refreshStatus() {
     statusFetching = true;
     try {
         const data = await bridge.apiGet('status');
+        lastStatus = data;
         updateStatus(data);
     } catch (e) {
         console.error('[napcat] 拉取状态失败:', e);
@@ -105,9 +266,6 @@ function updateStatus(d) {
             : 'Linux/macOS：从 AstrBot 读取配置，写入 NapCat 的 onebot11_*.json';
     }
 
-    // 下载进度
-    updateDownloadPanel(d.download_state);
-
     if (isWindows) {
         setText(els.running, d.running ? '运行中' : '未运行', d.running ? 'ok' : 'warn');
         setText(els.qq, d.qq_installed ? '已安装' : '未安装', d.qq_installed ? 'ok' : 'err');
@@ -122,30 +280,36 @@ function updateStatus(d) {
         setText(els.port, d.napcat_port ?? '-');
 
         const tk = d.napcat_token || '';
-        setText(els.webuiToken, tk ? tk.substring(0, 8) + '...' : '无', tk ? 'ok' : '');
-
-        const powerBtn = $('btn-toggle-power');
-        if (powerBtn) {
-            if (d.running) {
-                powerBtn.textContent = '停止';
-                powerBtn.classList.remove('btn-primary');
-                powerBtn.classList.add('btn-danger');
-            } else {
-                powerBtn.textContent = '启动';
-                powerBtn.classList.remove('btn-danger');
-                powerBtn.classList.add('btn-primary');
-            }
-        }
+        setText(els.webuiToken, tk || '无', tk ? 'ok' : '');
     } else {
         setText(els.webuiToken, '-', '');
     }
 
-    const fullPath = d.napcat_config_file || '';
-    if (fullPath) {
-        const fileName = fullPath.split(/[\\/]/).pop() || fullPath;
-        setTextMono(els.napcatFile, fileName, 'ok', fullPath);
-    } else {
-        setTextMono(els.napcatFile, '未找到', 'err', '');
+    const powerBtn = $('btn-toggle-power');
+    if (powerBtn) {
+        if (d.running) {
+            if (els.powerLabel) els.powerLabel.textContent = '停止';
+            powerBtn.classList.remove('power-on');
+            powerBtn.classList.add('power-off');
+        } else {
+            if (els.powerLabel) els.powerLabel.textContent = '启动';
+            powerBtn.classList.remove('power-off');
+            powerBtn.classList.add('power-on');
+        }
+    }
+
+    const webuiReady = !!d.napcat_webui_url;
+    if (els.webuiSummary) {
+        if (webuiReady) {
+            els.webuiSummary.disabled = false;
+            els.webuiSummary.style.opacity = '1';
+            els.webuiSummary.style.cursor = 'pointer';
+        } else {
+            els.webuiSummary.disabled = true;
+            els.webuiSummary.style.opacity = '0.4';
+            els.webuiSummary.style.cursor = 'not-allowed';
+            if (els.webuiDetails) els.webuiDetails.open = false;
+        }
     }
 
     if (d.astrbot_bot_found) {
@@ -164,8 +328,7 @@ function updateStatus(d) {
             d.last_sync_ok ? 'ok' : (d.last_sync_time ? 'err' : ''));
 
     setText(els.astrbotPath, d.astrbot_config_path || '未找到', d.astrbot_config_path ? 'ok' : 'err');
-    setText(els.napcatDir, d.napcat_config_dir || '未找到，请在配置中手动指定',
-            d.napcat_config_dir ? 'ok' : 'err');
+    setText(els.napcatDir, d.napcat_config_dir || '未找到', d.napcat_config_dir ? 'ok' : 'err');
 
     const cfg = d.config || {};
     if ($('cfg-napcat-dir')) $('cfg-napcat-dir').value = cfg.napcat_config_dir || '';
@@ -176,102 +339,10 @@ function updateStatus(d) {
     updateGuide(d);
 }
 
-function updateDownloadPanel(dl) {
-    const p = els.downloadPanel;
-    if (!p) return;
-
-    if (!dl) {
-        p.classList.remove('visible', 'done', 'failed');
-        return;
-    }
-
-    const phase = dl.phase || 'idle';
-    const isActive = !!dl.downloading;
-    const isDone = phase === 'done';
-    const isFailed = phase === 'failed';
-
-    // 活跃中 / 刚完成 / 刚失败 都显示
-    if (!isActive && !isDone && !isFailed) {
-        p.classList.remove('visible', 'done', 'failed');
-        return;
-    }
-
-    p.classList.add('visible');
-    p.classList.toggle('done', isDone);
-    p.classList.toggle('failed', isFailed);
-
-    // 图标和标题
-    if (isActive) {
-        els.dlIcon.textContent = '⬇️';
-        if (phase === 'extracting') {
-            els.dlIcon.textContent = '📦';
-            els.dlTitleText.textContent = '正在解压 NapCat.Shell.zip';
-        } else {
-            els.dlTitleText.textContent = '正在下载 NapCat.Shell.zip';
-        }
-    } else if (isDone) {
-        els.dlIcon.textContent = '✅';
-        els.dlTitleText.textContent = dl.message || '下载完成';
-    } else if (isFailed) {
-        els.dlIcon.textContent = '❌';
-        els.dlTitleText.textContent = dl.message || '下载失败';
-    }
-
-    // 镜像信息
-    if (isActive && dl.current_mirror && dl.total_mirrors > 0) {
-        els.dlMirror.textContent = `${dl.current_index}/${dl.total_mirrors} · ${dl.current_mirror}`;
-    } else if (isDone && dl.current_mirror) {
-        els.dlMirror.textContent = dl.current_mirror;
-    } else {
-        els.dlMirror.textContent = '';
-    }
-
-    // 进度条
-    let percent = dl.percent || 0;
-    if (isDone) percent = 100;
-    if (isFailed) percent = 0;
-    els.dlProgressFill.style.width = percent + '%';
-
-    // 文本
-    els.dlPercent.textContent = percent + '%';
-
-    if (dl.total_mb > 0) {
-        els.dlSize.textContent = `${(dl.downloaded_mb || 0).toFixed(1)} / ${dl.total_mb.toFixed(1)} MB`;
-    } else if (dl.downloaded_mb > 0) {
-        els.dlSize.textContent = `${dl.downloaded_mb.toFixed(1)} MB`;
-    } else {
-        els.dlSize.textContent = '';
-    }
-
-    if (isActive && dl.speed_kbps > 0) {
-        els.dlSpeed.textContent = `${dl.speed_kbps.toFixed(0)} KB/s`;
-    } else {
-        els.dlSpeed.textContent = '';
-    }
-
-    // 完成后 5 秒自动隐藏
-    if (downloadHideTimer) {
-        clearTimeout(downloadHideTimer);
-        downloadHideTimer = null;
-    }
-    if (isDone || isFailed) {
-        downloadHideTimer = setTimeout(() => {
-            p.classList.remove('visible', 'done', 'failed');
-        }, 5000);
-    }
-}
-
 function setText(el, text, className = '') {
     if (!el) return;
     el.textContent = String(text);
     el.className = 'value' + (className ? ' ' + className : '');
-}
-
-function setTextMono(el, text, className = '', title = '') {
-    if (!el) return;
-    el.textContent = String(text);
-    el.className = 'value mono-small' + (className ? ' ' + className : '');
-    el.title = title || '';
 }
 
 function updateGuide(d) {
@@ -281,11 +352,8 @@ function updateGuide(d) {
     if (d.astrbot_bot_found && d.napcat_config_file && d.last_sync_ok) {
         g.className = 'guide success visible';
         g.innerHTML = `
-            <div style="font-weight:600;margin-bottom:6px;">✅ 配置已同步</div>
-            <div>反向 WS 地址：<code>ws://${escapeHtml(d.astrbot_bot_host)}:${escapeHtml(d.astrbot_bot_port)}/ws/</code></div>
-            <div style="margin-top:6px;font-size:11px;color:#a6adc8;">
-                ${isWindows ? '若 NapCat 已在运行，请点「重启」让新配置生效。' : '请重启 NapCat 让新配置生效。'}
-            </div>
+            <div style="font-weight:600;margin-bottom:4px;">配置已同步</div>
+            <div>反向 WS：<code>ws://${escapeHtml(d.astrbot_bot_host)}:${escapeHtml(d.astrbot_bot_port)}/ws/</code></div>
         `;
         return;
     }
@@ -293,15 +361,8 @@ function updateGuide(d) {
     if (!d.astrbot_bot_found) {
         g.className = 'guide visible';
         g.innerHTML = `
-            <div style="font-weight:600;margin-bottom:6px;">📋 先在 AstrBot 创建机器人</div>
-            <div style="line-height:1.9;">
-                <b>1.</b> 打开 AstrBot 左侧栏 <strong>机器人</strong> → 点击 <strong>+ 创建机器人</strong><br>
-                <b>2.</b> 类型选择 <strong>OneBot v11</strong><br>
-                <b>3.</b> 反向 WebSocket 主机地址填 <code>0.0.0.0</code><br>
-                <b>4.</b> 反向 WebSocket 端口填一个未被占用的端口（如 <code>6199</code>）<br>
-                <b>5.</b> Token 按需填写<br>
-                <b>6.</b> 保存后回到本页面点 <strong>「立即同步」</strong>
-            </div>
+            <div style="font-weight:600;margin-bottom:4px;">先在 AstrBot 创建 OneBot v11 机器人</div>
+            <div>AstrBot 左侧栏 -&gt; 机器人 -&gt; 创建机器人 -&gt; OneBot v11，端口填未被占用的（如 6199），保存后回到此处点「立即同步」。</div>
         `;
         return;
     }
@@ -309,14 +370,8 @@ function updateGuide(d) {
     if (!d.napcat_config_dir) {
         g.className = 'guide warn visible';
         g.innerHTML = `
-            <div style="font-weight:600;margin-bottom:6px;">⚠ 未找到 NapCat 配置目录</div>
-            <div style="line-height:1.9;">
-                请点击右上角 <strong>「配置」</strong>，填写 <strong>「NapCat 配置目录」</strong>：
-            </div>
-            <div style="margin-top:6px;font-size:11px;line-height:1.9;">
-                · Windows：<code>C:\\Users\\你的用户名\\NapCat\\config</code> 或插件目录下的 <code>napcat\\config</code><br>
-                · Linux：<code>/opt/QQ/resources/app/app_launcher/napcat/config</code>
-            </div>
+            <div style="font-weight:600;margin-bottom:4px;">未找到 NapCat 配置目录</div>
+            <div>点右上角「配置」，手动填写 NapCat 的 config 目录路径。</div>
         `;
         return;
     }
@@ -324,7 +379,7 @@ function updateGuide(d) {
     if (d.napcat_config_dir && !d.last_sync_ok) {
         g.className = 'guide error visible';
         g.innerHTML = `
-            <div style="font-weight:600;margin-bottom:6px;">✗ 同步失败</div>
+            <div style="font-weight:600;margin-bottom:4px;">同步失败</div>
             <div>${escapeHtml(d.last_sync_msg || '未知错误')}</div>
         `;
         return;
@@ -334,7 +389,7 @@ function updateGuide(d) {
 }
 
 async function refreshLogs() {
-    if (!bridge || logFetching || !els.logContainer || !isWindows) return;
+    if (!bridge || logFetching || !els.logContainer) return;
     logFetching = true;
     try {
         const data = await bridge.apiGet('logs', { since: logOffset });
@@ -347,6 +402,9 @@ async function refreshLogs() {
             }
             logOffset = data.total;
             els.logContainer.scrollTop = els.logContainer.scrollHeight;
+        }
+        if (els.logCount) {
+            els.logCount.textContent = `${data.total || 0} 行`;
         }
     } catch (e) {
         console.error('[napcat] 拉取日志失败:', e);
@@ -362,10 +420,14 @@ function clearLog() {
 }
 
 async function postAction(endpoint, successMsg = '') {
-    if (!bridge) { toast('Bridge 未就绪', 3000, 'err'); return null; }
+    if (!bridge) {
+        toast('Bridge 未就绪', 3000, 'err');
+        return null;
+    }
     try {
         const r = await bridge.apiPost(endpoint);
         if (successMsg) toast(successMsg, 2000, 'ok');
+        await refreshStatus();
         return r;
     } catch (e) {
         console.error(`[napcat] ${endpoint} 失败:`, e);
@@ -374,28 +436,85 @@ async function postAction(endpoint, successMsg = '') {
     }
 }
 
+async function togglePower() {
+    if (!bridge) return;
+    try {
+        const d = await bridge.apiGet('status');
+        const ep = d.running ? 'stop' : 'start';
+        await postAction(ep, d.running ? '停止指令已发送' : '启动指令已发送');
+    } catch (e) {
+        toast(`操作失败: ${e.message || e}`, 3000, 'err');
+    }
+}
+
 async function doSync() {
     const r = await postAction('sync');
     if (r) {
-        await refreshStatus();
         if (r.ok) toast('同步成功', 2000, 'ok');
         else toast(`同步失败: ${r.message || ''}`, 4000, 'err');
     }
 }
 
-async function doRefresh() {
-    const r = await postAction('refresh');
-    if (r) { await refreshStatus(); toast('已重新探测', 1500, 'ok'); }
-}
-
-async function openWebUI() {
+// ============================================================
+// 打开 WebUI - 在当前访问者的浏览器
+// ============================================================
+// 逻辑：
+//   1. 重写 URL（127.0.0.1 -> 当前 hostname）
+//   2. 尝试用 <a>、window.open、window.top.open 打开新标签页
+//   3. 不管成功与否，都弹出对话框显示 URL + 复制按钮
+//      —— 这样即使 iframe 沙箱阻止了弹窗，用户也能手动复制
+async function openWebUINewPage() {
+    closeWebUIDetails();
     if (!bridge) return;
     try {
-        await bridge.apiPost('open-webui');
-        toast('已在系统浏览器打开 WebUI');
+        const d = lastStatus || await bridge.apiGet('status');
+        const rawUrl = d.napcat_webui_url;
+        if (!rawUrl) {
+            toast('WebUI 地址尚未获取，请先启动 NapCat', 3000, 'err');
+            return;
+        }
+
+        const url = rewriteUrlForCurrentHost(rawUrl);
+        console.log('[napcat] WebUI URL (rewritten):', url);
+
+        const opened = tryOpenUrl(url);
+
+        // 无论是否打开，都弹框显示 URL 供复制
+        showUrlDialog(
+            '打开 NapCat WebUI',
+            url,
+            opened
+                ? '已尝试在新标签页打开。如果没有自动弹出，请复制下面的地址粘贴到浏览器打开。'
+                : '当前环境阻止了自动弹出新窗口，请复制下面的地址，粘贴到你自己的浏览器里打开。'
+        );
     } catch (e) {
+        console.error('[napcat] 打开 WebUI 失败:', e);
         toast(`打开失败: ${e.message || e}`, 3000, 'err');
     }
+}
+
+// ============================================================
+// 打开 WebUI - 在 AstrBot 服务器所在机器的浏览器
+// ============================================================
+async function openWebUIBrowser() {
+    closeWebUIDetails();
+    if (!bridge) return;
+    try {
+        const d = lastStatus || await bridge.apiGet('status');
+        if (!d.napcat_webui_url) {
+            toast('WebUI 地址尚未获取，请先启动 NapCat', 3000, 'err');
+            return;
+        }
+        await bridge.apiPost('open-webui');
+        toast('已调用系统浏览器打开（AstrBot 所在机器）', 2000, 'ok');
+    } catch (e) {
+        console.error('[napcat] 打开 WebUI 失败:', e);
+        toast(`打开失败: ${e.message || e}`, 3000, 'err');
+    }
+}
+
+function closeWebUIDetails() {
+    if (els.webuiDetails) els.webuiDetails.open = false;
 }
 
 function openConfig() {
@@ -446,8 +565,8 @@ async function scanCandidates() {
         let html = `<div style="font-size:10px;color:#6c7086;margin-bottom:6px;">找到 ${candidates.length} 个候选，点击选择：</div>`;
         candidates.forEach((c, i) => {
             html += `<div class="scan-result-item" data-dir="${escapeHtml(c.dir)}" data-idx="${i}">
-                <div class="dir">📁 ${escapeHtml(c.dir)}</div>
-                <div class="file">📄 ${escapeHtml(c.file_name)}</div>
+                <div class="dir">目录：${escapeHtml(c.dir)}</div>
+                <div class="file">文件：${escapeHtml(c.file_name)}</div>
             </div>`;
         });
         resultEl.innerHTML = html;
@@ -472,35 +591,43 @@ function bindEvents() {
         if (el) el.addEventListener('click', handler);
     };
 
-    bind('btn-toggle-power', async () => {
-        if (!bridge) return;
-        try {
-            const d = await bridge.apiGet('status');
-            const ep = d.running ? 'stop' : 'start';
-            await postAction(ep, d.running ? '停止指令已发送' : '启动指令已发送');
-        } catch (e) {
-            toast(`操作失败: ${e.message || e}`, 3000, 'err');
-        }
-    });
+    bind('btn-toggle-power', togglePower);
+    bind('btn-sync', doSync);
+    bind('btn-open-webui-newpage', openWebUINewPage);
+    bind('btn-open-webui-browser', openWebUIBrowser);
     bind('btn-restart', () => postAction('restart', '重启指令已发送'));
-    bind('btn-open-webui', openWebUI);
     bind('btn-cleanup', async () => {
         if (!confirm('将强制终止所有 NapCat 相关进程。继续？')) return;
         await postAction('cleanup', '已清理残留进程');
     });
-    bind('btn-sync', doSync);
-    bind('btn-refresh', doRefresh);
-    bind('btn-scan', scanCandidates);
+    bind('btn-refresh', async () => {
+        const r = await postAction('refresh');
+        if (r) toast('已重新探测', 1500, 'ok');
+    });
     bind('btn-clear-log', clearLog);
     bind('btn-open-config', openConfig);
     bind('btn-config-cancel', closeConfig);
     bind('btn-config-save', saveConfig);
+    bind('btn-scan', scanCandidates);
 
     if (els.modal) {
         els.modal.addEventListener('click', (e) => {
             if (e.target === els.modal) closeConfig();
         });
     }
+
+    document.addEventListener('click', (e) => {
+        if (!els.webuiDetails || !els.webuiDetails.open) return;
+        if (!e.target.closest('.webui-details')) {
+            els.webuiDetails.open = false;
+        }
+    });
+
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && els.webuiDetails && els.webuiDetails.open) {
+            els.webuiDetails.open = false;
+        }
+    });
 }
 
 function main() {
