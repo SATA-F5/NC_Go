@@ -22,7 +22,8 @@
 2. 等待日志区出现 `WebUi User Panel Url: http://127.0.0.1:6099/webui?token=xxx`
 3. 点「在浏览器打开 WebUI」按钮，在浏览器完成 QQ 扫码登录
 4. 登录成功后，插件会自动：
-   - 在端口范围内选一个可用端口
+   - 读取 AstrBot 机器人配置里的端口
+   - 读取你在 AstrBot 中已创建好的 aiocqhttp 机器人配置
    - 将反向 WS 地址写入 NapCat 的 `onebot11_*.json`
    - 重启 NapCat 使配置生效
 
