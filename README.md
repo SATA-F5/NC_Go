@@ -6,7 +6,7 @@
 
 1. 已安装 **QQNT 9.9.27+**
 2. Python 环境（AstrBot 自带），已安装 `aiohttp`
-3. 已经创建好机器人了
+3. *已经创建好机器人了*
 
 ## 安装插件
 
@@ -29,10 +29,10 @@
 
 ## 常见问题
 
-- 启动后一直显示「未安装 QQ」**：请从 https://im.qq.com 安装最新版 QQNT
-- 端口被占用**：修改配置里的 `napcat_port`，或在启动前用「清理残留进程」按钮清理
-- 插件重载卡住**：点「清理残留进程」按钮，或命令行执行 `taskkill /F /IM NapCatWinBootMain.exe`
-- 出现NapCat下载失败时，请到releases界面手动下载到路径：
+- **启动后一直显示「未安装 QQ」**：请从 https://im.qq.com 安装最新版 QQNT
+- **端口被占用**：修改配置里的 `napcat_port`，或在启动前用「清理残留进程」按钮清理
+- **插件重载卡住**：点「清理残留进程」按钮，或命令行执行 `taskkill /F /IM NapCatWinBootMain.exe`
+- **出现NapCat下载失败时**，请到releases界面手动下载到路径：
 
 ```text
 "C:\user\%USERPROFILE%\.astrbot\data\plugins\pulid_napcat_go_to_astrbot"
