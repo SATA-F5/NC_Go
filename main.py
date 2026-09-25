@@ -38,9 +38,6 @@ NAPCAT_LINUX_INSTALL_URL = "https://nclatest.znin.net/NapNeko/NapCat-Installer/m
 DEFAULT_NAPCAT_VERSION = "v4.18.28"
 DEFAULT_DOWNLOAD_MIRROR = "https://gh.zwy.one/"
 
-# 需要自动升级掉的旧默认版本号（不包含用户手动填的合法版本）
-LEGACY_NAPCAT_VERSIONS = {"v4.17.32", "v4.17.31", ""}
-
 NAPCAT_MIRROR_CANDIDATES = [
     "https://gh.zwy.one/", "https://raw.ihtw.moe/", "https://gh.llkk.cc/",
     "https://gh.xxooo.cf/", "https://ghfile.geekertao.top/", "https://ghproxy.cxkpro.top/",
