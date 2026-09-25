@@ -2,11 +2,11 @@
 
 一键部署与连接 NapCat 到 AstrBot 的插件。
 
-## 前置要求
+## *前置要求*
 
 1. 已安装 **QQNT 9.9.27+**
 2. Python 环境（AstrBot 自带），已安装 `aiohttp`
-3. *已经创建好机器人了*
+3. **已经创建好机器人了**
 
 ## 安装插件
 
@@ -22,7 +22,6 @@
 2. 等待日志区出现 `WebUi User Panel Url: http://127.0.0.1:6099/webui?token=xxx`
 3. 点「在浏览器打开 WebUI」按钮，在浏览器完成 QQ 扫码登录
 4. 登录成功后，插件会自动：
-   - 读取 AstrBot 机器人配置里的端口
    - 读取你在 AstrBot 中已创建好的 aiocqhttp 机器人配置
    - 将反向 WS 地址写入 NapCat 的 `onebot11_*.json`
    - 重启 NapCat 使配置生效
@@ -35,7 +34,7 @@
 - **出现NapCat下载失败时**，请到releases界面手动下载到路径：
 
 ```text
-"C:\user\%USERPROFILE%\.astrbot\data\plugins\pulid_napcat_go_to_astrbot"
+%USERPROFILE%\.astrbot\data\plugins_data\pulid_napcat_go_to_astrbot
 ```
 
 ```curl
