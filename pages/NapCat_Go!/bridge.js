@@ -23,19 +23,31 @@ const els = {
     logCount: $('log-count'),
     webuiDetails: $('webui-details'),
     webuiSummary: $('btn-open-webui-summary'),
+    // Download panel
+    downloadPanel: $('download-panel'),
+    dlTitleText: $('dl-title-text'),
+    dlMirror: $('dl-mirror'),
+    dlProgressFill: $('dl-progress-fill'),
+    dlPercent: $('dl-percent'),
+    dlSize: $('dl-size'),
+    dlSpeed: $('dl-speed'),
 };
 
 let bridge = null;
 let statusTimer = null;
 let logTimer = null;
+let fastDownloadTimer = null;
 let logOffset = 0;
 let statusFetching = false;
 let logFetching = false;
 let isWindows = false;
 let lastStatus = null;
+let downloadHideTimer = null;
+let lastDownloading = false;
 
 const STATUS_INTERVAL = 3000;
 const LOG_INTERVAL = 3000;
+const FAST_DL_INTERVAL = 500;
 const MAX_LOG_LINES = 1000;
 const LOCAL_HOSTS = ['127.0.0.1', 'localhost', '0.0.0.0', '[::]', '::'];
 
@@ -53,14 +65,10 @@ function toast(message, duration = 2500, kind = '') {
     setTimeout(() => els.toast.classList.remove('visible'), duration);
 }
 
-// ============================================================
-// 把 URL 里的 127.0.0.1/localhost 替换为当前访问 AstrBot 的 hostname
-// ============================================================
 function rewriteUrlForCurrentHost(url) {
     if (!url) return url;
     const currentHost = window.location.hostname;
     if (!currentHost) return url;
-
     try {
         const u = new URL(url);
         if (LOCAL_HOSTS.includes(u.hostname)) {
@@ -75,11 +83,7 @@ function rewriteUrlForCurrentHost(url) {
     }
 }
 
-// ============================================================
-// 通用的"打开 URL"提示框
-// ============================================================
 function showUrlDialog(title, url, hint) {
-    // 移除旧的
     const old = document.getElementById('napcat-url-dialog');
     if (old) old.remove();
 
@@ -131,7 +135,6 @@ function showUrlDialog(title, url, hint) {
             await navigator.clipboard.writeText(url);
             toast('已复制到剪贴板', 1500, 'ok');
         } catch (e) {
-            // 老浏览器降级
             urlBox.select();
             document.execCommand('copy');
             toast('已复制（请手动 Ctrl+C）', 2000, 'ok');
@@ -169,13 +172,8 @@ function showUrlDialog(title, url, hint) {
     urlBox.select();
 }
 
-// ============================================================
-// 尝试用多种方式打开 URL（不涉及后端）
-// ============================================================
 function tryOpenUrl(url) {
     let opened = false;
-
-    // 方式 1: <a target="_blank"> 点击
     try {
         const a = document.createElement('a');
         a.href = url;
@@ -191,8 +189,6 @@ function tryOpenUrl(url) {
     } catch (e) {
         console.warn('[napcat] a.click 失败:', e);
     }
-
-    // 方式 2: window.open
     if (!opened) {
         try {
             const w = window.open(url, '_blank');
@@ -201,8 +197,6 @@ function tryOpenUrl(url) {
             console.warn('[napcat] window.open 失败:', e);
         }
     }
-
-    // 方式 3: 从顶层窗口打开（同源时可行）
     if (!opened) {
         try {
             if (window.top && window.top !== window) {
@@ -213,7 +207,6 @@ function tryOpenUrl(url) {
             console.warn('[napcat] window.top.open 失败:', e);
         }
     }
-
     return opened;
 }
 
@@ -251,6 +244,47 @@ async function refreshStatus() {
     }
 }
 
+// ---------- 下载期快速轮询 ----------
+function startFastDownloadPolling() {
+    if (fastDownloadTimer) return;
+    console.log('[napcat] 启动快速下载轮询 (0.5s)');
+    fastDownloadTimer = setInterval(async () => {
+        if (!bridge) return;
+        try {
+            const d = await bridge.apiGet('status');
+            const ds = d.download_state || {};
+            if (ds.downloading) {
+                lastStatus = d;
+                updateDownloadPanel(ds);
+                const btn = $('btn-toggle-power');
+                if (btn && els.powerLabel) {
+                    btn.disabled = true;
+                    btn.classList.remove('power-on', 'power-off');
+                    btn.classList.add('power-downloading');
+                    els.powerLabel.textContent = ds.percent > 0
+                        ? `下载中 ${ds.percent}%`
+                        : '准备下载...';
+                }
+            } else {
+                console.log('[napcat] 下载结束，停止快速轮询');
+                clearInterval(fastDownloadTimer);
+                fastDownloadTimer = null;
+                // 立刻刷一次完整状态，让按钮恢复
+                refreshStatus();
+            }
+        } catch (e) {
+            // ignore
+        }
+    }, FAST_DL_INTERVAL);
+}
+
+function stopFastDownloadPolling() {
+    if (fastDownloadTimer) {
+        clearInterval(fastDownloadTimer);
+        fastDownloadTimer = null;
+    }
+}
+
 function updateStatus(d) {
     if (!d) return;
 
@@ -265,6 +299,9 @@ function updateStatus(d) {
             ? 'Windows：启动/停止 NapCat，同步 AstrBot 机器人配置'
             : 'Linux/macOS：从 AstrBot 读取配置，写入 NapCat 的 onebot11_*.json';
     }
+
+    // Download panel
+    updateDownloadPanel(d.download_state);
 
     if (isWindows) {
         setText(els.running, d.running ? '运行中' : '未运行', d.running ? 'ok' : 'warn');
@@ -285,16 +322,48 @@ function updateStatus(d) {
         setText(els.webuiToken, '-', '');
     }
 
+    // ---- 启动/停止按钮：兼顾"下载中"状态 ----
+    const ds = d.download_state || {};
+    const isDownloading = !!ds.downloading;
+
+    // 下载刚结束，弹一次 toast
+    if (lastDownloading && !isDownloading) {
+        if (ds.phase === 'done') {
+            toast('NapCat 下载完成，正在启动...', 2500, 'ok');
+        } else if (ds.phase === 'failed') {
+            toast('NapCat 下载失败，请看右侧日志', 4000, 'err');
+        }
+    }
+    lastDownloading = isDownloading;
+
+    // 下载开始 → 自动开启快速轮询
+    if (isDownloading && !fastDownloadTimer) {
+        startFastDownloadPolling();
+    }
+
     const powerBtn = $('btn-toggle-power');
     if (powerBtn) {
-        if (d.running) {
-            if (els.powerLabel) els.powerLabel.textContent = '停止';
-            powerBtn.classList.remove('power-on');
-            powerBtn.classList.add('power-off');
+        if (isDownloading) {
+            powerBtn.disabled = true;
+            powerBtn.classList.remove('power-on', 'power-off');
+            powerBtn.classList.add('power-downloading');
+            if (els.powerLabel) {
+                els.powerLabel.textContent = ds.percent > 0
+                    ? `下载中 ${ds.percent}%`
+                    : '准备下载...';
+            }
         } else {
-            if (els.powerLabel) els.powerLabel.textContent = '启动';
-            powerBtn.classList.remove('power-off');
-            powerBtn.classList.add('power-on');
+            powerBtn.disabled = false;
+            powerBtn.classList.remove('power-downloading');
+            if (d.running) {
+                if (els.powerLabel) els.powerLabel.textContent = '停止';
+                powerBtn.classList.remove('power-on');
+                powerBtn.classList.add('power-off');
+            } else {
+                if (els.powerLabel) els.powerLabel.textContent = '启动';
+                powerBtn.classList.remove('power-off');
+                powerBtn.classList.add('power-on');
+            }
         }
     }
 
@@ -337,6 +406,80 @@ function updateStatus(d) {
     if ($('cfg-mirror')) $('cfg-mirror').value = cfg.napcat_download_mirror || '';
 
     updateGuide(d);
+}
+
+function updateDownloadPanel(dl) {
+    const p = els.downloadPanel;
+    if (!p) return;
+
+    if (!dl) {
+        p.classList.remove('visible', 'done', 'failed');
+        return;
+    }
+
+    const phase = dl.phase || 'idle';
+    const isActive = !!dl.downloading;
+    const isDone = phase === 'done';
+    const isFailed = phase === 'failed';
+
+    if (!isActive && !isDone && !isFailed) {
+        p.classList.remove('visible', 'done', 'failed');
+        return;
+    }
+
+    p.classList.add('visible');
+    p.classList.toggle('done', isDone);
+    p.classList.toggle('failed', isFailed);
+
+    if (isActive) {
+        if (phase === 'extracting') {
+            if (els.dlTitleText) els.dlTitleText.textContent = '正在解压 NapCat.Shell.zip';
+        } else {
+            if (els.dlTitleText) els.dlTitleText.textContent = '正在下载 NapCat.Shell.zip';
+        }
+    } else if (isDone) {
+        if (els.dlTitleText) els.dlTitleText.textContent = dl.message || '下载完成';
+    } else if (isFailed) {
+        if (els.dlTitleText) els.dlTitleText.textContent = dl.message || '下载失败';
+    }
+
+    if (isActive && dl.current_mirror && dl.total_mirrors > 0) {
+        if (els.dlMirror) els.dlMirror.textContent = `${dl.current_index}/${dl.total_mirrors} · ${dl.current_mirror}`;
+    } else if (isDone && dl.current_mirror) {
+        if (els.dlMirror) els.dlMirror.textContent = dl.current_mirror;
+    } else {
+        if (els.dlMirror) els.dlMirror.textContent = '';
+    }
+
+    let percent = dl.percent || 0;
+    if (isDone) percent = 100;
+    if (isFailed) percent = 0;
+    if (els.dlProgressFill) els.dlProgressFill.style.width = percent + '%';
+    if (els.dlPercent) els.dlPercent.textContent = percent + '%';
+
+    if (dl.total_mb > 0) {
+        if (els.dlSize) els.dlSize.textContent = `${(dl.downloaded_mb || 0).toFixed(1)} / ${dl.total_mb.toFixed(1)} MB`;
+    } else if (dl.downloaded_mb > 0) {
+        if (els.dlSize) els.dlSize.textContent = `${dl.downloaded_mb.toFixed(1)} MB`;
+    } else {
+        if (els.dlSize) els.dlSize.textContent = '';
+    }
+
+    if (isActive && dl.speed_kbps > 0) {
+        if (els.dlSpeed) els.dlSpeed.textContent = `${dl.speed_kbps.toFixed(0)} KB/s`;
+    } else {
+        if (els.dlSpeed) els.dlSpeed.textContent = '';
+    }
+
+    if (downloadHideTimer) {
+        clearTimeout(downloadHideTimer);
+        downloadHideTimer = null;
+    }
+    if (isDone || isFailed) {
+        downloadHideTimer = setTimeout(() => {
+            p.classList.remove('visible', 'done', 'failed');
+        }, 5000);
+    }
 }
 
 function setText(el, text, className = '') {
@@ -441,6 +584,10 @@ async function togglePower() {
     try {
         const d = await bridge.apiGet('status');
         const ep = d.running ? 'stop' : 'start';
+        // 点击"启动"时立刻开快速轮询，确保下载进度不漏帧
+        if (ep === 'start') {
+            startFastDownloadPolling();
+        }
         await postAction(ep, d.running ? '停止指令已发送' : '启动指令已发送');
     } catch (e) {
         toast(`操作失败: ${e.message || e}`, 3000, 'err');
@@ -455,14 +602,6 @@ async function doSync() {
     }
 }
 
-// ============================================================
-// 打开 WebUI - 在当前访问者的浏览器
-// ============================================================
-// 逻辑：
-//   1. 重写 URL（127.0.0.1 -> 当前 hostname）
-//   2. 尝试用 <a>、window.open、window.top.open 打开新标签页
-//   3. 不管成功与否，都弹出对话框显示 URL + 复制按钮
-//      —— 这样即使 iframe 沙箱阻止了弹窗，用户也能手动复制
 async function openWebUINewPage() {
     closeWebUIDetails();
     if (!bridge) return;
@@ -479,7 +618,6 @@ async function openWebUINewPage() {
 
         const opened = tryOpenUrl(url);
 
-        // 无论是否打开，都弹框显示 URL 供复制
         showUrlDialog(
             '打开 NapCat WebUI',
             url,
@@ -493,9 +631,6 @@ async function openWebUINewPage() {
     }
 }
 
-// ============================================================
-// 打开 WebUI - 在 AstrBot 服务器所在机器的浏览器
-// ============================================================
 async function openWebUIBrowser() {
     closeWebUIDetails();
     if (!bridge) return;

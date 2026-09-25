@@ -29,7 +29,7 @@ except ImportError:
 
 from .pulid_api import NapCatAPI
 
-PLUGIN_CODE_VERSION = "2026-09-21-v16-universal"
+PLUGIN_CODE_VERSION = "2026-09-25-v17-logging"
 PLUGIN_NAME = "pulid_napcat_go_to_astrbot"
 CONFIG_VERSION = 3
 
@@ -288,6 +288,7 @@ class NapCatManager:
         self._reset_download_state()
         self.download_state["downloading"] = True
         self.download_state["phase"] = "downloading"
+        self.log_lines.append("[download] 开始下载 NapCat.Shell.zip ...")
         try:
             version = self.plugin.config.get("napcat_version", DEFAULT_NAPCAT_VERSION)
             filename = "NapCat.Shell.zip"
@@ -300,7 +301,15 @@ class NapCatManager:
             ]:
                 if local_zip.exists():
                     logger.info(f"Found local archive: {local_zip}")
-                    return await self._extract_napcat(local_zip)
+                    self.log_lines.append(f"[download] 发现本地压缩包: {local_zip}")
+                    ok = await self._extract_napcat(local_zip)
+                    if ok:
+                        self.download_state["phase"] = "done"
+                        self.log_lines.append("[download] ✔ 本地压缩包解压成功")
+                    else:
+                        self.download_state["phase"] = "failed"
+                        self.log_lines.append("[download] ✘ 本地压缩包解压失败")
+                    return ok
 
             official = f"{NAPCAT_RELEASE_BASE}/{version}/{filename}"
             user_mirror = (self.plugin.config.get("napcat_download_mirror") or "").strip()
@@ -315,9 +324,11 @@ class NapCatManager:
             urls.append((official, "official"))
             download_path = self.napcat_dir / filename
             self.download_state["total_mirrors"] = len(urls)
+            self.log_lines.append(f"[download] 共 {len(urls)} 个镜像候选，依次尝试")
 
             for idx, (url, label) in enumerate(urls, 1):
                 logger.info(f"[{idx}/{len(urls)}] Trying {label}")
+                self.log_lines.append(f"[download] [{idx}/{len(urls)}] 尝试: {label}")
                 self.download_state["current_mirror"] = label
                 self.download_state["current_index"] = idx
                 ssl_ctx = make_ssl_context()
@@ -325,8 +336,14 @@ class NapCatManager:
                 session = aiohttp.ClientSession(connector=connector)
                 try:
                     async with session:
-                        async with session.get(url, timeout=aiohttp.ClientTimeout(total=None, sock_connect=10, sock_read=30)) as resp:
+                        async with session.get(
+                            url,
+                            timeout=aiohttp.ClientTimeout(total=None, sock_connect=10, sock_read=30),
+                        ) as resp:
                             if resp.status != 200:
+                                self.log_lines.append(
+                                    f"[download] [{idx}/{len(urls)}] {label} HTTP {resp.status}，换下一个"
+                                )
                                 continue
                             total = resp.content_length or 0
                             downloaded = 0
@@ -346,6 +363,7 @@ class NapCatManager:
                                             self.download_state["total_mb"] = total / 1024 / 1024
                                             self.download_state["percent"] = downloaded * 100 // total
                                         last_update = now
+
                     success = await self._extract_napcat(download_path)
                     if success:
                         try:
@@ -353,15 +371,31 @@ class NapCatManager:
                         except Exception:
                             pass
                         self.download_state["phase"] = "done"
-                    return success
-                except Exception as e:
-                    logger.debug(f"{label} failed: {e}")
+                        self.log_lines.append(f"[download] ✔ 下载并解压成功（来源: {label}）")
+                        return True
+                    self.log_lines.append(
+                        f"[download] [{idx}/{len(urls)}] {label} 下载完成但解压失败，换下一个"
+                    )
                     try:
                         if download_path.exists():
                             download_path.unlink()
                     except Exception:
                         pass
                     continue
+
+                except Exception as e:
+                    logger.debug(f"{label} failed: {e}")
+                    self.log_lines.append(
+                        f"[download] [{idx}/{len(urls)}] {label} 失败: {e}"
+                    )
+                    try:
+                        if download_path.exists():
+                            download_path.unlink()
+                    except Exception:
+                        pass
+                    continue
+
+            self.log_lines.append("[download] ✘ 所有镜像均失败，请手动下载或更换网络")
             self.download_state["phase"] = "failed"
             return False
         finally:
@@ -417,8 +451,21 @@ class NapCatManager:
             if self.process and self.process.returncode is None:
                 logger.warning("NapCat is already running")
                 return True
+
+            # 先确保 NapCat 本体就绪（未安装则下载），再检查 QQ
+            if IS_WINDOWS and not self._find_entry():
+                logger.info("NapCat not found, downloading...")
+                if not await self.download_napcat():
+                    logger.error("NapCat download failed")
+                    return False
+                if not self._find_entry():
+                    logger.error("NapCat entry still missing after download")
+                    self.log_lines.append("[start] 下载完成但入口文件仍缺失")
+                    return False
+
             if not is_qq_installed():
                 logger.error("QQ client not detected")
+                self.log_lines.append("[start] 未检测到 QQ 客户端，请先安装 QQNT")
                 return False
 
             qq_name = "QQ.exe" if IS_WINDOWS else "qq"
@@ -427,11 +474,6 @@ class NapCatManager:
             qq_number = str(self.plugin.config.get("qq_number", "") or "").strip()
 
             if IS_WINDOWS:
-                if not self._find_entry():
-                    logger.info("NapCat not found, downloading...")
-                    if not await self.download_napcat():
-                        logger.error("NapCat download failed")
-                        return False
                 launcher = None
                 for name in ["launcher-win10-user.bat", "launcher-win10.bat", "launcher.bat", "launcher-user.bat"]:
                     p = self.napcat_dir / name
@@ -440,6 +482,7 @@ class NapCatManager:
                         break
                 if not launcher:
                     logger.error(f"Windows launcher not found: {self.napcat_dir}")
+                    self.log_lines.append(f"[start] 未找到启动器: {self.napcat_dir}")
                     return False
                 cmd = ["cmd", "/c", launcher.name]
                 if qq_number:
@@ -447,6 +490,7 @@ class NapCatManager:
                 cwd = str(self.napcat_dir)
                 creationflags = CREATE_NO_WINDOW
                 logger.info(f"Starting NapCat (Windows): {' '.join(cmd)}")
+                self.log_lines.append(f"[start] 启动 NapCat: {launcher.name}")
             else:
                 if not shutil.which("xvfb-run"):
                     logger.error("xvfb-run not found")
@@ -481,6 +525,7 @@ class NapCatManager:
                 )
             except Exception as e:
                 logger.error(f"Failed to start NapCat: {e}")
+                self.log_lines.append(f"[start] 启动失败: {e}")
                 return False
 
             self._log_task = asyncio.create_task(self._read_logs())

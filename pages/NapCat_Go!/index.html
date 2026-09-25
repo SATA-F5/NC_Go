@@ -72,7 +72,6 @@
             min-width: 0;
         }
 
-        /* ---------- Big action buttons ---------- */
         .big-buttons {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -107,8 +106,9 @@
         .big-btn.power-off:hover:not(:disabled) { background: #ee6f8f; }
         .big-btn.sync { background: #a6e3a1; color: #1e1e2e; }
         .big-btn.sync:hover:not(:disabled) { background: #8ddb86; }
+        .big-btn.power-downloading { background: #f9e2af; color: #1e1e2e; }
+        .big-btn.power-downloading:hover:not(:disabled) { background: #f9e2af; }
 
-        /* ---------- WebUI details dropdown ---------- */
         .webui-details {
             position: relative;
             grid-column: span 2;
@@ -166,6 +166,72 @@
         .webui-menu-item + .webui-menu-item {
             border-top: 1px solid #2a2b3d;
         }
+
+        /* ---------- Download panel ---------- */
+        .download-panel {
+            background: #45475a;
+            border-left: 3px solid #89b4fa;
+            border-radius: 8px;
+            padding: 10px 12px;
+            display: none;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .download-panel.visible { display: flex; }
+        .download-panel.done { border-left-color: #a6e3a1; }
+        .download-panel.failed { border-left-color: #f38ba8; }
+
+        .dl-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 12px;
+            gap: 8px;
+        }
+        .dl-title {
+            font-weight: 600;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .dl-mirror {
+            font-family: 'Consolas', monospace;
+            font-size: 10px;
+            color: #a6adc8;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            max-width: 55%;
+        }
+        .dl-progress-bar {
+            height: 6px;
+            background: #1e1e2e;
+            border-radius: 3px;
+            overflow: hidden;
+        }
+        .dl-progress-fill {
+            height: 100%;
+            width: 0%;
+            background: linear-gradient(90deg, #89b4fa, #74a8f5);
+            border-radius: 3px;
+            transition: width 0.3s ease;
+        }
+        .download-panel.done .dl-progress-fill {
+            background: linear-gradient(90deg, #a6e3a1, #8ddb86);
+        }
+        .download-panel.failed .dl-progress-fill {
+            background: linear-gradient(90deg, #f38ba8, #ee6f8f);
+        }
+        .dl-info {
+            display: flex;
+            justify-content: space-between;
+            font-size: 10px;
+            color: #a6adc8;
+            font-family: 'Consolas', monospace;
+        }
+        .dl-info .dl-speed { color: #f9e2af; }
+        .dl-info .dl-percent { color: #89b4fa; font-weight: 600; }
+        .dl-info .dl-size { color: #6c7086; }
 
         /* ---------- Status ---------- */
         .status-section-title {
@@ -276,7 +342,10 @@
             border-radius: 8px;
             padding: 10px 12px;
             flex: 1;
-            min-height: 560px;
+            min-height: 0;
+            /* 35 行可见（font-size 11px × line-height 1.5 = 16.5px/行 + 上下 padding 20px），
+               超出后容器不再长高，由 overflow-y 提供滚动 */
+            max-height: calc(35 * 1.5em + 20px);
             overflow-y: auto;
             font-family: 'Consolas', 'Cascadia Mono', monospace;
             font-size: 11px;
@@ -421,9 +490,7 @@
             .main-layout {
                 grid-template-columns: 1fr;
             }
-            .log-container {
-                min-height: 320px;
-            }
+            /* 小屏幕也保持 35 行可见高度 */
         }
         @media (max-width: 480px) {
             .big-buttons {
@@ -468,6 +535,22 @@
                             </button>
                         </div>
                     </details>
+                </div>
+
+                <!-- Download panel -->
+                <div class="download-panel" id="download-panel">
+                    <div class="dl-header">
+                        <div class="dl-title" id="dl-title-text">正在下载 NapCat.Shell.zip</div>
+                        <div class="dl-mirror" id="dl-mirror"></div>
+                    </div>
+                    <div class="dl-progress-bar">
+                        <div class="dl-progress-fill" id="dl-progress-fill"></div>
+                    </div>
+                    <div class="dl-info">
+                        <span class="dl-percent" id="dl-percent">0%</span>
+                        <span class="dl-size" id="dl-size"></span>
+                        <span class="dl-speed" id="dl-speed"></span>
+                    </div>
                 </div>
 
                 <div class="status-section-title">运行状态</div>
