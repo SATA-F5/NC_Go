@@ -23,7 +23,6 @@
 3. 点「在浏览器打开 WebUI」按钮，在浏览器完成 QQ 扫码登录
 4. 登录成功后，插件会自动：
    - 在端口范围内选一个可用端口
-   - 在 AstrBot 中创建 aiocqhttp 机器人实例
    - 将反向 WS 地址写入 NapCat 的 `onebot11_*.json`
    - 重启 NapCat 使配置生效
 
@@ -34,6 +33,6 @@
 - **插件重载卡住**：点「清理残留进程」按钮，或命令行执行 `taskkill /F /IM NapCatWinBootMain.exe`
 - **出现NapCat下载失败时，请到releases界面手动下载到路径："C:\user\{User_name}\.astrbot\data\plugins\pulid_napcat_go_to_astrbot"
 
-```bash
+```curl
 https://github.com/NapNeko/NapCatQQ/releases
 ```
