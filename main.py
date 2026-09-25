@@ -29,14 +29,17 @@ except ImportError:
 
 from .pulid_api import NapCatAPI
 
-PLUGIN_CODE_VERSION = "2026-09-25-v17-logging"
+PLUGIN_CODE_VERSION = "2026-09-25-v18-versionfix"
 PLUGIN_NAME = "pulid_napcat_go_to_astrbot"
 CONFIG_VERSION = 3
 
 NAPCAT_RELEASE_BASE = "https://github.com/NapNeko/NapCatQQ/releases/download"
 NAPCAT_LINUX_INSTALL_URL = "https://nclatest.znin.net/NapNeko/NapCat-Installer/main/script/install.sh"
-DEFAULT_NAPCAT_VERSION = "v4.17.32"
+DEFAULT_NAPCAT_VERSION = "v4.18.28"
 DEFAULT_DOWNLOAD_MIRROR = "https://gh.zwy.one/"
+
+# 需要自动升级掉的旧默认版本号（不包含用户手动填的合法版本）
+LEGACY_NAPCAT_VERSIONS = {"v4.17.32", "v4.17.31", ""}
 
 NAPCAT_MIRROR_CANDIDATES = [
     "https://gh.zwy.one/", "https://raw.ihtw.moe/", "https://gh.llkk.cc/",
@@ -291,6 +294,27 @@ class NapCatManager:
         self.log_lines.append("[download] 开始下载 NapCat.Shell.zip ...")
         try:
             version = self.plugin.config.get("napcat_version", DEFAULT_NAPCAT_VERSION)
+            # 兜底：万一 config.json 里存了带路径的非法值，就地纠正
+            if "/" in version:
+                fixed = version.split("/", 1)[0].strip()
+                if fixed:
+                    logger.warning(
+                        f"[NapCat_Go] invalid napcat_version {version!r}, "
+                        f"auto-corrected to {fixed!r}"
+                    )
+                    self.log_lines.append(
+                        f"[download] config 里 napcat_version 非法（{version}），"
+                        f"自动纠正为 {fixed}"
+                    )
+                    version = fixed
+                    self.plugin.config["napcat_version"] = fixed
+                    try:
+                        self.plugin._save_config(self.plugin.config)
+                    except Exception:
+                        pass
+                else:
+                    version = DEFAULT_NAPCAT_VERSION
+
             filename = "NapCat.Shell.zip"
 
             for local_zip in [
@@ -312,6 +336,7 @@ class NapCatManager:
                     return ok
 
             official = f"{NAPCAT_RELEASE_BASE}/{version}/{filename}"
+            self.log_lines.append(f"[download] 目标版本: {version}")
             user_mirror = (self.plugin.config.get("napcat_download_mirror") or "").strip()
             prefixes: List[str] = []
             if user_mirror:
@@ -1106,6 +1131,28 @@ class NapCatGoPlugin(Star):
             logger.info(f"[NapCat_Go] migrating config: v{stored_version} -> v{CONFIG_VERSION}")
             persisted_user["__config_version__"] = CONFIG_VERSION
 
+        # ---- napcat_version 迁移 ----
+        # 1) 老默认值（LEGACY_NAPCAT_VERSIONS 里的）自动升到新默认
+        # 2) 出现 "/" 的非法值（例如 "v4.18.28/NapCat.Shell.zip"）就地纠正
+        persisted_napcat_ver = str(persisted_user.get("napcat_version", "") or "").strip()
+        if persisted_napcat_ver:
+            if persisted_napcat_ver in LEGACY_NAPCAT_VERSIONS:
+                logger.info(
+                    f"[NapCat_Go] napcat_version legacy default {persisted_napcat_ver!r} "
+                    f"-> {DEFAULT_NAPCAT_VERSION!r}"
+                )
+                persisted_user["napcat_version"] = DEFAULT_NAPCAT_VERSION
+            elif "/" in persisted_napcat_ver:
+                fixed = persisted_napcat_ver.split("/", 1)[0].strip()
+                if fixed:
+                    logger.warning(
+                        f"[NapCat_Go] napcat_version invalid {persisted_napcat_ver!r}, "
+                        f"auto-corrected to {fixed!r}"
+                    )
+                    persisted_user["napcat_version"] = fixed
+                else:
+                    persisted_user["napcat_version"] = DEFAULT_NAPCAT_VERSION
+
         for k in DEFAULT_CONFIG:
             if k in persisted_user:
                 config[k] = persisted_user[k]
@@ -1163,6 +1210,10 @@ class NapCatGoPlugin(Star):
                         pass
                 else:
                     final[k] = str(v or "").strip()
+
+        # 保险：final 里如果还残留非法 napcat_version，同样纠正
+        if "/" in final.get("napcat_version", ""):
+            final["napcat_version"] = final["napcat_version"].split("/", 1)[0].strip() or DEFAULT_NAPCAT_VERSION
 
         to_save = dict(final)
         to_save["__config_version__"] = CONFIG_VERSION
