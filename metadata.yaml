@@ -2,7 +2,7 @@ name: pulid_napcat_go_to_astrbot
 display_name: Napcat_Go！
 short_desc: 一键部署与连接 NapCat，解决反向 WS 配置难题
 desc: 更方便地解决了配置多项反向 WS 的问题，一键配置，解放大脑和双手。
-version: 4.6.6
+version: 4.7.6
 author: SATA-F5
 repo: https://github.com/SATA-F5/NC_Go
 astrbot_version: ">=4.24.1"
