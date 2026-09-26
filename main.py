@@ -29,7 +29,7 @@ except ImportError:
 
 from .pulid_api import NapCatAPI
 
-PLUGIN_CODE_VERSION = "2026-09-25-v18-versionfix"
+PLUGIN_CODE_VERSION = "2026-09-26-v19-auditfix"
 PLUGIN_NAME = "pulid_napcat_go_to_astrbot"
 CONFIG_VERSION = 3
 
@@ -37,6 +37,9 @@ NAPCAT_RELEASE_BASE = "https://github.com/NapNeko/NapCatQQ/releases/download"
 NAPCAT_LINUX_INSTALL_URL = "https://nclatest.znin.net/NapNeko/NapCat-Installer/main/script/install.sh"
 DEFAULT_NAPCAT_VERSION = "v4.18.28"
 DEFAULT_DOWNLOAD_MIRROR = "https://gh.zwy.one/"
+
+# 注意：不要在这里定义 __LEGACY_NAPCAT_VERSIONS__ 之类的全局常量，
+# 迁移判断全部内联到 _load_config() 里，避免"模块级变量丢失导致 NameError"。
 
 NAPCAT_MIRROR_CANDIDATES = [
     "https://gh.zwy.one/", "https://raw.ihtw.moe/", "https://gh.llkk.cc/",
@@ -88,11 +91,29 @@ def resolve_persistent_dir(context: Any) -> Path:
 # Utility
 # ============================================================
 
-def make_ssl_context() -> ssl.SSLContext:
+def make_ssl_context(strict: bool = False) -> ssl.SSLContext:
+    """
+    创建 SSLContext。
+
+    strict=False（默认，镜像/代理场景）：关闭证书校验，避免第三方 GitHub
+    代理链不完整导致的下载失败。
+    strict=True（官方源 github.com）：走完整 TLS 校验，防止中间人替换。
+    """
     ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
+    if not strict:
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
     return ctx
+
+
+def _mask_token(t: Optional[str]) -> str:
+    """返回脱敏后的 token（用于 Web API 响应，避免明文外泄）。"""
+    s = str(t or "")
+    if not s:
+        return ""
+    if len(s) <= 8:
+        return "*" * len(s)
+    return s[:4] + "..." + s[-4:]
 
 
 def is_qq_installed() -> bool:
@@ -291,7 +312,7 @@ class NapCatManager:
         self.log_lines.append("[download] 开始下载 NapCat.Shell.zip ...")
         try:
             version = self.plugin.config.get("napcat_version", DEFAULT_NAPCAT_VERSION)
-            # 兜底：万一 config.json 里存了带路径的非法值，就地纠正
+            # 兜底：非法值就地纠正（防止外部手动改过 config.json）
             if "/" in version:
                 fixed = version.split("/", 1)[0].strip()
                 if fixed:
@@ -353,7 +374,8 @@ class NapCatManager:
                 self.log_lines.append(f"[download] [{idx}/{len(urls)}] 尝试: {label}")
                 self.download_state["current_mirror"] = label
                 self.download_state["current_index"] = idx
-                ssl_ctx = make_ssl_context()
+                # 只有官方源走严格证书校验；镜像/代理保持宽松，避免 CA 链不全直接失败
+                ssl_ctx = make_ssl_context(strict=(label == "official"))
                 connector = aiohttp.TCPConnector(ssl=ssl_ctx)
                 session = aiohttp.ClientSession(connector=connector)
                 try:
@@ -882,7 +904,9 @@ class ConfigSyncer:
             "astrbot_config_path": str(self.astrbot_config_path) if self.astrbot_config_path else None,
             "astrbot_bot_found": self.astrbot_bot is not None,
             "astrbot_bot_id": bot.get("id"), "astrbot_bot_host": bot.get("host"),
-            "astrbot_bot_port": bot.get("port"), "astrbot_bot_token": bot.get("token", ""),
+            "astrbot_bot_port": bot.get("port"),
+            # token 脱敏：前端只用于展示，不再返回明文
+            "astrbot_bot_token": _mask_token(bot.get("token", "")),
             "napcat_config_dir": str(self.napcat_config_dir) if self.napcat_config_dir else None,
             "napcat_config_file": str(self.napcat_config_file) if self.napcat_config_file else None,
             "last_sync_ok": self.last_sync_ok, "last_sync_msg": self.last_sync_msg,
@@ -990,7 +1014,8 @@ class NapCatGoPlugin(Star):
         d["napcat_installed"] = self.manager.is_installed()
         d["qq_installed"] = is_qq_installed()
         d["napcat_webui_url"] = self.manager.napcat_webui_url
-        d["napcat_token"] = self.manager.napcat_token
+        # napcat_token 脱敏返回，前端仅做展示
+        d["napcat_token"] = _mask_token(self.manager.napcat_token)
         d["napcat_port"] = self.manager.napcat_port
         d["download_state"] = dict(self.manager.download_state)
         d["log_count"] = len(self.manager.log_lines)
@@ -1128,27 +1153,29 @@ class NapCatGoPlugin(Star):
             logger.info(f"[NapCat_Go] migrating config: v{stored_version} -> v{CONFIG_VERSION}")
             persisted_user["__config_version__"] = CONFIG_VERSION
 
-        # ---- napcat_version 迁移 ----
-        # 1) 老默认值（LEGACY_NAPCAT_VERSIONS 里的）自动升到新默认
-        # 2) 出现 "/" 的非法值（例如 "v4.18.28/NapCat.Shell.zip"）就地纠正
-        persisted_napcat_ver = str(persisted_user.get("napcat_version", "") or "").strip()
-        if persisted_napcat_ver:
-            if persisted_napcat_ver in LEGACY_NAPCAT_VERSIONS:
-                logger.info(
-                    f"[NapCat_Go] napcat_version legacy default {persisted_napcat_ver!r} "
-                    f"-> {DEFAULT_NAPCAT_VERSION!r}"
-                )
-                persisted_user["napcat_version"] = DEFAULT_NAPCAT_VERSION
-            elif "/" in persisted_napcat_ver:
-                fixed = persisted_napcat_ver.split("/", 1)[0].strip()
-                if fixed:
-                    logger.warning(
-                        f"[NapCat_Go] napcat_version invalid {persisted_napcat_ver!r}, "
-                        f"auto-corrected to {fixed!r}"
+        # ---- napcat_version 迁移（不依赖任何模块级常量）----
+        # 1) 老默认值 -> 升到新默认值
+        # 2) 含 "/" 的非法值（如 "v4.18.28/NapCat.Shell.zip"）-> 截断到 "/" 前
+        try:
+            _pver_raw = persisted_user.get("napcat_version", "")
+            _pver = str(_pver_raw or "").strip()
+            if _pver:
+                _need_fix = False
+                _fixed = DEFAULT_NAPCAT_VERSION
+                if _pver in ("v4.17.32", "v4.17.31", "v4.17.30"):
+                    _need_fix = True
+                elif "/" in _pver:
+                    _head = _pver.split("/", 1)[0].strip()
+                    if _head:
+                        _fixed = _head
+                    _need_fix = True
+                if _need_fix:
+                    logger.info(
+                        f"[NapCat_Go] napcat_version migrate {_pver!r} -> {_fixed!r}"
                     )
-                    persisted_user["napcat_version"] = fixed
-                else:
-                    persisted_user["napcat_version"] = DEFAULT_NAPCAT_VERSION
+                    persisted_user["napcat_version"] = _fixed
+        except Exception as _e:
+            logger.warning(f"[NapCat_Go] napcat_version migrate skipped: {_e}")
 
         for k in DEFAULT_CONFIG:
             if k in persisted_user:
@@ -1209,8 +1236,13 @@ class NapCatGoPlugin(Star):
                     final[k] = str(v or "").strip()
 
         # 保险：final 里如果还残留非法 napcat_version，同样纠正
-        if "/" in final.get("napcat_version", ""):
-            final["napcat_version"] = final["napcat_version"].split("/", 1)[0].strip() or DEFAULT_NAPCAT_VERSION
+        try:
+            _fver = str(final.get("napcat_version", "") or "")
+            if "/" in _fver:
+                _fhead = _fver.split("/", 1)[0].strip()
+                final["napcat_version"] = _fhead or DEFAULT_NAPCAT_VERSION
+        except Exception:
+            pass
 
         to_save = dict(final)
         to_save["__config_version__"] = CONFIG_VERSION

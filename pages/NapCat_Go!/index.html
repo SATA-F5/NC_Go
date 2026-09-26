@@ -54,11 +54,12 @@
         .btn-primary:hover { background: #74a8f5; }
         .btn-sm { padding: 4px 10px; font-size: 11px; }
 
+        /* ---------- 主布局：两列独立，不再互相拉伸 ---------- */
         .main-layout {
             display: grid;
             grid-template-columns: 1fr 1fr;
             gap: 14px;
-            min-height: 620px;
+            align-items: start;   /* ★ 关键：左右两列各自决定高度，互不拉伸 */
         }
         .left-column {
             display: flex;
@@ -322,12 +323,12 @@
             user-select: all;
         }
 
+        /* ---------- Log section：固定高度，不随左列拉伸 ---------- */
         .log-section {
             display: flex;
             flex-direction: column;
             gap: 6px;
-            flex: 1;
-            min-height: 0;
+            /* ★ 去掉 flex: 1 / min-height: 0 —— 不再参与拉伸 */
         }
         .log-header {
             display: flex;
@@ -336,16 +337,17 @@
             font-size: 11px;
             color: #a6adc8;
             letter-spacing: 0.3px;
+            flex-shrink: 0;
         }
         .log-container {
             background: #11111b;
             border-radius: 8px;
             padding: 10px 12px;
-            flex: 1;
-            min-height: 0;
-            /* 35 行可见（font-size 11px × line-height 1.5 = 16.5px/行 + 上下 padding 20px），
-               超出后容器不再长高，由 overflow-y 提供滚动 */
-            max-height: calc(35 * 1.5em + 20px);
+            /* ★ 固定 35 行高度：11px × 1.5 = 16.5px/行 → 35×1.5em = 577.5px + 20px padding */
+            height: calc(35 * 1.5em + 20px);
+            /* ★ 小屏兜底：最多不超过视口剩下的空间 */
+            max-height: calc(100vh - 220px);
+            /* ★ 内容超出时只滚动，不再撑高 */
             overflow-y: auto;
             font-family: 'Consolas', 'Cascadia Mono', monospace;
             font-size: 11px;
@@ -487,10 +489,13 @@
             }
         }
         @media (max-width: 900px) {
+            /* 单列布局：日志保持 35 行，不再额外约束 */
             .main-layout {
                 grid-template-columns: 1fr;
             }
-            /* 小屏幕也保持 35 行可见高度 */
+            .log-container {
+                max-height: calc(100vh - 180px);
+            }
         }
         @media (max-width: 480px) {
             .big-buttons {
