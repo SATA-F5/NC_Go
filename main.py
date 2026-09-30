@@ -32,7 +32,7 @@ except ImportError:
 
 from .pulid_api import NapCatAPI
 
-PLUGIN_CODE_VERSION = "2026-09-30-v55-win-restored"
+PLUGIN_CODE_VERSION = "2026-09-30-v56-linux-progress"
 PLUGIN_NAME = "pulid_napcat_go_to_astrbot"
 CONFIG_VERSION = 4
 
@@ -516,7 +516,6 @@ class NapCatManager:
     # ==================== Windows ====================
 
     def _find_entry(self) -> Optional[str]:
-        """Windows 启动器文件查找"""
         for name in ["launcher-win10-user.bat", "launcher-win10.bat",
                      "launcher.bat", "launcher-user.bat",
                      "launcher-user.sh", "launcher.sh",
@@ -538,7 +537,6 @@ class NapCatManager:
             return False
 
     async def download_napcat(self) -> bool:
-        """下载 Windows Shell 包（仅 Windows 使用）。"""
         if not IS_WINDOWS:
             return True
         if self._downloading:
@@ -574,7 +572,6 @@ class NapCatManager:
 
             filename = "NapCat.Shell.zip"
 
-            # 检查本地缓存
             for local_zip in [
                 self.napcat_dir / filename,
                 self.napcat_dir / "napcat.shell.zip",
@@ -776,47 +773,92 @@ class NapCatManager:
         self.napcat_dir.mkdir(parents=True, exist_ok=True)
         script_path = self.napcat_dir / "install.sh"
 
+        # ============ 初始化下载状态，让 WebUI 立刻显示进度面板 ============
+        self._reset_download_state()
+        self.download_state["downloading"] = True
+        self.download_state["phase"] = "downloading"
+        self.download_state["message"] = "正在准备安装"
+        self.download_state["current_mirror"] = "准备中"
+
         pw = (self.plugin.config.get("sudo_password", "") or "").strip()
         if not pw:
             self.log_lines.append("[install] ✘ 未配置 sudo 密码")
+            self.download_state["phase"] = "failed"
+            self.download_state["downloading"] = False
+            self.download_state["message"] = "未配置 sudo 密码"
             return False
         if not shutil.which("sudo"):
             self.log_lines.append("[install] ✘ 系统无 sudo 命令")
+            self.download_state["phase"] = "failed"
+            self.download_state["downloading"] = False
+            self.download_state["message"] = "系统无 sudo"
             return False
 
         sh_urls = self._build_install_sh_urls()
         self.log_lines.append(f"[install] 目标目录: {self.napcat_dir}")
         self.log_lines.append(f"[install] 共 {len(sh_urls)} 个 install.sh 下载源，依次尝试")
 
+        self.download_state["total_mirrors"] = len(sh_urls)
+        self.download_state["current_index"] = 0
+        self.download_state["current_mirror"] = "下载 install.sh"
+        self.download_state["message"] = "正在下载 install.sh"
+
+        # ============ 阶段 1：下载 install.sh（流式读取更新进度）============
         downloaded = False
         for idx, (url, label) in enumerate(sh_urls, 1):
             self.log_lines.append(f"[install] [{idx}/{len(sh_urls)}] 下载 install.sh: {label}")
+            self.download_state["current_mirror"] = label
+            self.download_state["current_index"] = idx
             try:
-                proc = await asyncio.create_subprocess_exec(
-                    "curl", "-fsSL", "--connect-timeout", "15", "--max-time", "120",
-                    "-o", str(script_path), url,
-                    stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-                try:
-                    _, stderr = await asyncio.wait_for(proc.communicate(), timeout=150)
-                except asyncio.TimeoutError:
+                # 用 Python aiohttp 流式下载 install.sh，能实时更新进度
+                ssl_ctx = make_ssl_context(strict=False)
+                connector = aiohttp.TCPConnector(ssl=ssl_ctx)
+                async with aiohttp.ClientSession(connector=connector) as session:
                     try:
-                        proc.kill()
-                    except Exception:
-                        pass
-                    continue
+                        async with session.get(
+                            url,
+                            timeout=aiohttp.ClientTimeout(
+                                total=None, sock_connect=15, sock_read=30),
+                        ) as resp:
+                            if resp.status != 200:
+                                self.log_lines.append(
+                                    f"[install] [{idx}/{len(sh_urls)}] {label} HTTP {resp.status}"
+                                )
+                                continue
+                            total = resp.content_length or 0
+                            got = 0
+                            t0 = time.time()
+                            with open(script_path, "wb") as f:
+                                async for chunk in resp.content.iter_chunked(8192):
+                                    f.write(chunk)
+                                    got += len(chunk)
+                                    elapsed = time.time() - t0
+                                    if elapsed > 0:
+                                        self.download_state["downloaded_mb"] = got / 1024 / 1024
+                                        self.download_state["speed_kbps"] = got / elapsed / 1024
+                                        if total > 0:
+                                            self.download_state["total_mb"] = total / 1024 / 1024
+                                            self.download_state["percent"] = min(100, got * 100 // total)
+                                        else:
+                                            self.download_state["total_mb"] = 0.0
+                    except Exception as e:
+                        self.log_lines.append(f"[install] [{idx}/{len(sh_urls)}] {label} 下载异常: {e}")
+                        continue
 
-                if proc.returncode == 0 and script_path.exists() and script_path.stat().st_size > 100:
+                # 校验文件
+                if script_path.exists() and script_path.stat().st_size > 100:
+                    size = script_path.stat().st_size
                     self.log_lines.append(
-                        f"[install] [{idx}/{len(sh_urls)}] {label} ✔ 下载成功 ({script_path.stat().st_size} 字节)"
+                        f"[install] [{idx}/{len(sh_urls)}] {label} ✔ 下载成功 ({size} 字节)"
                     )
+                    self.download_state["downloaded_mb"] = size / 1024 / 1024
+                    self.download_state["total_mb"] = size / 1024 / 1024
+                    self.download_state["percent"] = 100
                     downloaded = True
                     break
                 else:
-                    err = (stderr or b"").decode("utf-8", errors="ignore").strip()[:200]
                     self.log_lines.append(
-                        f"[install] [{idx}/{len(sh_urls)}] {label} ✘ 失败: {err or '未知错误'}"
+                        f"[install] [{idx}/{len(sh_urls)}] {label} ✘ 文件异常"
                     )
             except Exception as e:
                 self.log_lines.append(f"[install] [{idx}/{len(sh_urls)}] {label} 异常: {e}")
@@ -824,12 +866,46 @@ class NapCatManager:
 
         if not downloaded:
             self.log_lines.append("[install] ✘ install.sh 所有来源均下载失败")
+            self.download_state["phase"] = "failed"
+            self.download_state["downloading"] = False
+            self.download_state["message"] = "install.sh 下载失败"
             return False
 
         try:
             os.chmod(script_path, 0o755)
         except Exception:
             pass
+
+        # ============ 阶段 2：执行 install.sh（心跳更新进度）============
+        # 切换到 extracting 阶段，前端会显示"正在解压 NapCat.Shell.zip"标题
+        self.download_state["phase"] = "extracting"
+        self.download_state["percent"] = 0
+        self.download_state["downloaded_mb"] = 0.0
+        self.download_state["total_mb"] = 0.0
+        self.download_state["speed_kbps"] = 0.0
+        self.download_state["current_mirror"] = "install.sh 执行中 00:00"
+        self.download_state["message"] = "正在执行 install.sh"
+
+        started_at = time.time()
+        stop_flag = asyncio.Event()
+
+        async def _tick():
+            # 每 1 秒更新一次：current_mirror 显示运行时间，percent 假进度爬升
+            # 假进度策略：10 分钟内从 0% 爬到 95%，剩余留给收尾
+            while not stop_flag.is_set():
+                try:
+                    await asyncio.wait_for(stop_flag.wait(), timeout=1.0)
+                    break
+                except asyncio.TimeoutError:
+                    pass
+                elapsed = time.time() - started_at
+                mm = int(elapsed) // 60
+                ss = int(elapsed) % 60
+                fake_pct = min(95, int(elapsed / 600 * 95))
+                self.download_state["percent"] = fake_pct
+                self.download_state["current_mirror"] = f"install.sh 执行中 {mm:02d}:{ss:02d}"
+
+        tick_task = asyncio.create_task(_tick())
 
         env = {
             **os.environ,
@@ -859,6 +935,9 @@ class NapCatManager:
                 except Exception:
                     pass
                 self.log_lines.append("[install] ✘ install.sh 执行超时")
+                self.download_state["phase"] = "failed"
+                self.download_state["downloading"] = False
+                self.download_state["message"] = "install.sh 执行超时"
                 return False
 
             output = stdout.decode("utf-8", errors="ignore") if stdout else ""
@@ -871,19 +950,35 @@ class NapCatManager:
             if ("incorrect password" in low or "sorry, try again" in low
                     or "authentication failure" in low):
                 self.log_lines.append("[install] ✘ sudo 密码错误")
+                self.download_state["phase"] = "failed"
+                self.download_state["downloading"] = False
+                self.download_state["message"] = "sudo 密码错误"
                 return False
+
+            ok = self._is_new_style_install(self.napcat_dir) or \
+                 self._is_new_style_install(self.napcat_dir / "napcat")
+
+            if ok:
+                self.log_lines.append("[install] ✔ 新方案安装成功")
+                self.download_state["phase"] = "done"
+                self.download_state["downloading"] = False
+                self.download_state["percent"] = 100
+                self.download_state["current_mirror"] = ""
+                self.download_state["message"] = "安装完成"
+            else:
+                self.log_lines.append("[install] ✘ 未检测到 libnapcat_launcher.so + launcher.sh")
+                self.download_state["phase"] = "failed"
+                self.download_state["downloading"] = False
+                self.download_state["message"] = "安装完成但未找到 launcher"
+            return ok
         finally:
+            stop_flag.set()
+            try:
+                await tick_task
+            except Exception:
+                pass
             if fake_bin and fake_bin.exists():
                 shutil.rmtree(fake_bin, ignore_errors=True)
-
-        ok = self._is_new_style_install(self.napcat_dir) or \
-             self._is_new_style_install(self.napcat_dir / "napcat")
-
-        if ok:
-            self.log_lines.append("[install] ✔ 新方案安装成功")
-        else:
-            self.log_lines.append("[install] ✘ 未检测到 libnapcat_launcher.so + launcher.sh")
-        return ok
 
     # ==================== Native 启动 ====================
 
@@ -900,7 +995,6 @@ class NapCatManager:
             env_extra: Dict[str, str] = {}
 
             if IS_WINDOWS:
-                # ===== Windows 分支 =====
                 if not self._find_entry():
                     if not await self.download_napcat():
                         self.log_lines.append("[start] ✘ 下载失败")
@@ -930,7 +1024,6 @@ class NapCatManager:
                 creationflags = CREATE_NO_WINDOW
                 self.log_lines.append(f"[start] 启动 NapCat: {launcher.name}")
             else:
-                # ===== Linux 分支 =====
                 root = self._find_new_style_root()
 
                 if not root:
@@ -1389,7 +1482,6 @@ class ConfigSyncer:
                 pass
             return d
 
-        # Windows：napcat_dir/config
         if IS_WINDOWS:
             d = self.napcat_dir / "config"
             try:
@@ -1398,7 +1490,6 @@ class ConfigSyncer:
                 pass
             return d
 
-        # Linux 新方案
         for base in [self.napcat_dir, self.napcat_dir / "napcat"]:
             for sub in [base / "config", base]:
                 try:
@@ -1465,7 +1556,6 @@ class ConfigSyncer:
         return results
 
     def _pre_sync_chown(self) -> None:
-        """同步前 chown（仅 Linux 需要，因为 NapCat 是 root 跑）"""
         if IS_WINDOWS:
             return
         if not self.napcat_config_dir:
@@ -1550,7 +1640,6 @@ class ConfigSyncer:
             return self._fail(f"Read failed: {e}")
 
         network = config.setdefault("network", {})
-        # 清空所有旧 client，只写一条 astrbot 的，SSL 关闭
         new_clients = [{
             "name": "astrbot",
             "enable": True,
