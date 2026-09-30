@@ -32,10 +32,11 @@ except ImportError:
 
 from .pulid_api import NapCatAPI
 
-PLUGIN_CODE_VERSION = "2026-09-30-v56-linux-progress"
+PLUGIN_CODE_VERSION = "2026-10-01-v62-clean-qq-urls"
 PLUGIN_NAME = "pulid_napcat_go_to_astrbot"
 CONFIG_VERSION = 4
 
+#所有下载均使用官方或镜像链接
 NAPCAT_RELEASE_BASE = "https://github.com/NapNeko/NapCatQQ/releases/download"
 NAPCAT_INSTALL_SH_ORIGINAL = "https://raw.githubusercontent.com/NapNeko/napcat-linux-installer/refs/heads/main/install.sh"
 NAPCAT_INSTALL_SH_LEGACY = "https://raw.githubusercontent.com/NapNeko/napcat-linux-installer/main/install.sh"
@@ -48,6 +49,12 @@ NAPCAT_MIRROR_CANDIDATES = [
     "https://git.yylx.win/", "https://gh.h233.eu.org/", "https://cdn.crashmc.com/",
     "https://githubproxy.cc/", "https://gh-proxy.com/", "https://ghproxy.net/",
     "https://ghfast.top/",
+]
+
+# LinuxQQ deb 下载源
+# 目前唯一验证可用的：GitHub zydou/QQ-Linux（会在下载时自动套 ghproxy 前缀）
+LINUXQQ_DEB_URLS = [
+    "https://github.com/zydou/QQ-Linux/releases/download/3.2.22-251203/QQ-3.2.22-251203-amd64.deb",
 ]
 
 IS_WINDOWS = platform.system() == "Windows"
@@ -168,6 +175,7 @@ _INSTALL_KEEP_SUBSTR = (
     "无法", "No such", "not found", "未找到", "安装完成", "安装失败",
     "成功", "完成", "开始", "下载", "解压", "拷贝", "安装到", "安装目录",
     "✔", "✘", "launcher", "launcher.sh", "Xvfb", "sudo", "密码", "chown",
+    "qq", "command not found", "文件已存在", "重命名",
 )
 _TS_INFO = re.compile(r"^\[\d{4}-\d{2}-\d{2}[ T]\d\d:\d\d:\d\d\]\s*:")
 
@@ -180,17 +188,17 @@ def _filter_install_output(text: str) -> List[str]:
         if not line:
             continue
         if any(ch in _ASCII_ART_CHARS for ch in line):
-            keep = True
-        elif line in ("--", "-" * 20):
-            keep = False
-        elif any(n in line for n in _INSTALL_NOISE_SUBSTR):
-            keep = False
-        elif _TS_INFO.match(line):
-            keep = any(k in line for k in _INSTALL_KEEP_SUBSTR)
-        else:
-            keep = any(k in line for k in _INSTALL_KEEP_SUBSTR)
-        if keep and line != prev:
-            out.append(line)
+            continue
+        if line in ("--", "-" * 20) or re.match(r"^[-=━─_*]{10,}$", line):
+            continue
+        if _TS_INFO.match(line):
+            if line != prev:
+                out.append(line)
+            prev = line
+            continue
+        if any(k in line for k in _INSTALL_KEEP_SUBSTR):
+            if line != prev:
+                out.append(line)
         prev = line
     return out
 
@@ -312,12 +320,27 @@ def is_qq_installed() -> bool:
             except Exception:
                 continue
         return False
-    for p in ["/opt/QQ/qq", "/opt/QQ/QQ", "/usr/bin/qq", "/usr/local/bin/qq",
+    for p in ["/opt/QQ/qq", "/opt/QQ/QQ"]:
+        try:
+            if os.path.exists(p) and os.access(p, os.X_OK):
+                return True
+        except Exception:
+            continue
+    cand = shutil.which("qq")
+    if cand:
+        try:
+            real = os.path.realpath(cand)
+            if os.path.exists(real) and os.access(real, os.X_OK):
+                return True
+        except Exception:
+            pass
+    for p in ["/usr/bin/qq", "/usr/local/bin/qq",
               "/opt/linuxqq/qq", "/usr/lib/qq/qq"]:
-        if os.path.exists(p):
-            return True
-    if shutil.which("qq"):
-        return True
+        try:
+            if os.path.exists(p) and os.access(p, os.X_OK):
+                return True
+        except Exception:
+            continue
     return False
 
 
@@ -453,6 +476,41 @@ class NapCatManager:
                 continue
         return None
 
+    def _find_qq_binary(self, root: Path) -> Tuple[Optional[str], Optional[str]]:
+        cand_which = shutil.which("qq")
+        if cand_which:
+            try:
+                real = os.path.realpath(cand_which)
+                if os.path.exists(real) and os.access(real, os.X_OK):
+                    self.log_lines.append(f"[start] which qq -> {real}")
+                    return real, str(Path(real).parent)
+                else:
+                    self.log_lines.append(
+                        f"[start] ⚠ which qq={cand_which} 是断链或不可执行，跳过"
+                    )
+            except Exception as e:
+                self.log_lines.append(f"[start] ⚠ 检查 which qq 失败: {e}")
+
+        for cand in [
+            root / "QQ" / "qq",
+            root / "qq",
+            Path("/opt/QQ/qq"),
+            Path("/usr/local/bin/qq"),
+            Path("/usr/bin/qq"),
+            Path("/usr/lib/qq/qq"),
+        ]:
+            try:
+                if not cand.exists():
+                    continue
+                real = os.path.realpath(cand)
+                if os.path.exists(real) and os.access(real, os.X_OK):
+                    self.log_lines.append(f"[start] 找到 qq: {real}")
+                    return real, str(Path(real).parent)
+            except Exception:
+                continue
+
+        return None, None
+
     def _refresh_launched_pids(self):
         try:
             qq_name = "QQ.exe" if IS_WINDOWS else "qq"
@@ -545,6 +603,8 @@ class NapCatManager:
         self._reset_download_state()
         self.download_state["downloading"] = True
         self.download_state["phase"] = "downloading"
+        self.download_state["message"] = "正在下载 NapCat.Shell.zip"
+        self.download_state["current_mirror"] = "准备下载"
         self.log_lines.append("[download] 开始下载 NapCat.Shell.zip ...")
 
         try:
@@ -583,6 +643,7 @@ class NapCatManager:
                     ok = await self._extract_napcat(local_zip)
                     if ok:
                         self.download_state["phase"] = "done"
+                        self.download_state["percent"] = 100
                         self.log_lines.append("[download] ✔ 本地压缩包解压成功")
                     else:
                         self.download_state["phase"] = "failed"
@@ -653,6 +714,7 @@ class NapCatManager:
                         except Exception:
                             pass
                         self.download_state["phase"] = "done"
+                        self.download_state["percent"] = 100
                         self.log_lines.append(f"[download] ✔ 下载并解压成功（来源: {label}）")
                         return True
                     try:
@@ -752,6 +814,317 @@ class NapCatManager:
         return str(self.plugin.config.get("docker_container_name", DEFAULT_DOCKER_CONTAINER)
                    or DEFAULT_DOCKER_CONTAINER).strip() or DEFAULT_DOCKER_CONTAINER
 
+    # ==================== Linux QQ 自动安装 ====================
+
+    async def _download_file(self, url: str, dest: Path,
+                             connect_timeout: int = 15, read_timeout: int = 60,
+                             progress_label: str = "",
+                             progress_index: int = 0,
+                             progress_total: int = 0,
+                             max_time: int = 900) -> bool:
+        try:
+            ssl_ctx = make_ssl_context(strict=False)
+            connector = aiohttp.TCPConnector(ssl=ssl_ctx)
+            async with aiohttp.ClientSession(connector=connector) as session:
+                async with session.get(
+                    url,
+                    timeout=aiohttp.ClientTimeout(
+                        total=max_time, sock_connect=connect_timeout,
+                        sock_read=read_timeout),
+                ) as resp:
+                    if resp.status != 200:
+                        self.log_lines.append(
+                            f"[qq-install] {progress_label} HTTP {resp.status}"
+                        )
+                        return False
+                    total = resp.content_length or 0
+                    got = 0
+                    t0 = time.time()
+                    with open(dest, "wb") as f:
+                        async for chunk in resp.content.iter_chunked(1024 * 64):
+                            f.write(chunk)
+                            got += len(chunk)
+                            elapsed = time.time() - t0
+                            if elapsed > 0:
+                                self.download_state["downloaded_mb"] = got / 1024 / 1024
+                                self.download_state["speed_kbps"] = got / elapsed / 1024
+                                if total > 0:
+                                    self.download_state["total_mb"] = total / 1024 / 1024
+                                    self.download_state["percent"] = min(100, got * 100 // total)
+                                else:
+                                    self.download_state["total_mb"] = 0.0
+                                self.download_state["current_mirror"] = progress_label
+                                self.download_state["current_index"] = progress_index
+                                self.download_state["total_mirrors"] = progress_total
+                    return True
+        except Exception as e:
+            self.log_lines.append(f"[qq-install] {progress_label} 异常: {e}")
+            return False
+
+    async def _validate_deb(self, path: Path) -> bool:
+        try:
+            with open(path, "rb") as f:
+                magic = f.read(7)
+            return magic == b"!<arch>"
+        except Exception:
+            return False
+
+    def _build_linuxqq_candidate_urls(self) -> List[Tuple[str, str]]:
+        """展开 LINUXQQ_DEB_URLS 为带镜像的候选列表。
+        - GitHub Release 链接：套 ghproxy 前缀，每个镜像生成一条（用户配置的镜像优先）
+        - 其他链接：直接加
+        """
+        candidates: List[Tuple[str, str]] = []
+        seen = set()
+
+        def add(u: str, label: str):
+            if u and u not in seen:
+                seen.add(u)
+                candidates.append((u, label))
+
+        # 用户配置的镜像优先
+        user_mirror = (self.plugin.config.get("napcat_download_mirror") or "").strip()
+        mirror_order: List[str] = []
+        if user_mirror:
+            mirror_order.append(user_mirror)
+        for m in NAPCAT_MIRROR_CANDIDATES:
+            if m not in mirror_order:
+                mirror_order.append(m)
+
+        for raw in LINUXQQ_DEB_URLS:
+            if "github.com/" in raw or "githubusercontent.com/" in raw:
+                for m in mirror_order:
+                    add(f"{m.rstrip('/')}/{raw}", m)
+                add(raw, "github-original")
+            else:
+                add(raw, "qq-cdn")
+        return candidates
+
+    async def ensure_linux_qq(self) -> bool:
+        if is_qq_installed():
+            self.log_lines.append("[qq-install] ✔ LinuxQQ 已安装，跳过")
+            return True
+
+        self.log_lines.append("[qq-install] 未检测到 LinuxQQ，开始自动安装 ...")
+
+        pw = (self.plugin.config.get("sudo_password", "") or "").strip()
+        if not pw:
+            self.log_lines.append("[qq-install] ✘ 未配置 sudo 密码，无法安装 QQ")
+            return False
+        if not shutil.which("sudo"):
+            self.log_lines.append("[qq-install] ✘ 系统无 sudo 命令")
+            return False
+
+        env_base = {
+            **os.environ,
+            "TERM": "dumb",
+            "NO_COLOR": "1",
+            "DEBIAN_FRONTEND": "noninteractive",
+        }
+
+        deb_path = self.napcat_dir / "linuxqq.deb"
+        downloaded = False
+
+        manual = list(self.napcat_dir.glob("linuxqq*.deb")) + \
+                 list(self.napcat_dir.glob("QQ*.deb"))
+        if manual:
+            try:
+                for m in manual:
+                    if await self._validate_deb(m):
+                        deb_path = m
+                        self.log_lines.append(f"[qq-install] 使用本地 deb: {deb_path}")
+                        downloaded = True
+                        break
+                    else:
+                        self.log_lines.append(
+                            f"[qq-install] ⚠ 本地 deb 无效: {m}，忽略"
+                        )
+            except Exception:
+                pass
+
+        if not downloaded:
+            candidates = self._build_linuxqq_candidate_urls()
+            total_urls = len(candidates)
+            self.download_state["downloading"] = True
+            self.download_state["phase"] = "downloading"
+            self.download_state["message"] = "正在下载 LinuxQQ"
+            self.download_state["current_mirror"] = "下载 LinuxQQ"
+            self.download_state["total_mirrors"] = total_urls
+            self.download_state["percent"] = 0
+
+            for idx, (url, label) in enumerate(candidates, 1):
+                short = url[:90] + ("..." if len(url) > 90 else "")
+                self.log_lines.append(
+                    f"[qq-install] [{idx}/{total_urls}] 尝试 ({label}): {short}"
+                )
+                self.download_state["current_index"] = idx
+                self.download_state["current_mirror"] = f"LinuxQQ ({idx}/{total_urls}) - {label}"
+                try:
+                    if deb_path.exists():
+                        try:
+                            deb_path.unlink()
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+                ok = await self._download_file(
+                    url, deb_path,
+                    connect_timeout=15, read_timeout=60,
+                    progress_label=f"LinuxQQ ({idx}/{total_urls})",
+                    progress_index=idx, progress_total=total_urls,
+                    max_time=900,
+                )
+                if not ok:
+                    continue
+                if not deb_path.exists() or deb_path.stat().st_size < 1024:
+                    self.log_lines.append(
+                        f"[qq-install] [{idx}/{total_urls}] ✘ 文件过小"
+                    )
+                    continue
+                if not await self._validate_deb(deb_path):
+                    self.log_lines.append(
+                        f"[qq-install] [{idx}/{total_urls}] ✘ 不是有效 deb，换下一个"
+                    )
+                    try:
+                        deb_path.unlink()
+                    except Exception:
+                        pass
+                    continue
+
+                size_mb = deb_path.stat().st_size / 1024 / 1024
+                self.log_lines.append(
+                    f"[qq-install] [{idx}/{total_urls}] ✔ 下载成功 ({size_mb:.1f} MB)"
+                )
+                downloaded = True
+                break
+
+            self.download_state["downloading"] = False
+
+        if not downloaded:
+            self.log_lines.append(
+                "[qq-install] ✘ 所有 LinuxQQ 下载源均失败。"
+                "请手动下载 deb 放到: " + str(self.napcat_dir)
+            )
+            self.log_lines.append(
+                "[qq-install] 手动下载地址（浏览器打开，任选其一）："
+            )
+            self.log_lines.append(
+                "[qq-install]   https://im.qq.com/linuxqq/index.shtml"
+            )
+            self.log_lines.append(
+                "[qq-install]   https://github.com/zydou/QQ-Linux/releases"
+            )
+            self.download_state["phase"] = "failed"
+            self.download_state["message"] = "LinuxQQ 下载失败"
+            return False
+
+        self.download_state["phase"] = "extracting"
+        self.download_state["message"] = "正在安装 LinuxQQ"
+        self.download_state["current_mirror"] = "安装 LinuxQQ"
+        self.download_state["percent"] = 0
+
+        env = dict(env_base)
+        fake_bin = self._build_fake_sudo("qq", env)
+        if not fake_bin:
+            self.log_lines.append("[qq-install] ✘ 创建 sudo 包装脚本失败")
+            self.download_state["phase"] = "failed"
+            return False
+
+        try:
+            self.log_lines.append("[qq-install] 执行: sudo apt-get update")
+            proc = await asyncio.create_subprocess_exec(
+                "sudo", "apt-get", "update",
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                env=env,
+            )
+            try:
+                await asyncio.wait_for(proc.communicate(), timeout=300)
+            except asyncio.TimeoutError:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+
+            self.log_lines.append(f"[qq-install] 执行: sudo dpkg -i {deb_path.name}")
+            proc = await asyncio.create_subprocess_exec(
+                "sudo", "dpkg", "-i", str(deb_path),
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                env=env,
+            )
+            try:
+                out, _ = await asyncio.wait_for(proc.communicate(), timeout=300)
+            except asyncio.TimeoutError:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                self.log_lines.append("[qq-install] ✘ dpkg 安装超时")
+                self.download_state["phase"] = "failed"
+                self.download_state["message"] = "dpkg 超时"
+                return False
+
+            dpkg_rc = proc.returncode or 0
+            text = (out or b"").decode("utf-8", errors="ignore")
+            for ln in text.splitlines()[-8:]:
+                if ln.strip():
+                    self.log_lines.append(f"[qq-install] {ln.strip()}")
+
+            if dpkg_rc != 0:
+                self.log_lines.append(
+                    "[qq-install] dpkg 返回非 0，执行 apt-get -f install -y 补依赖 ..."
+                )
+                proc = await asyncio.create_subprocess_exec(
+                    "sudo", "apt-get", "-f", "install", "-y",
+                    stdin=asyncio.subprocess.DEVNULL,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                    env=env,
+                )
+                try:
+                    out, _ = await asyncio.wait_for(proc.communicate(), timeout=600)
+                except asyncio.TimeoutError:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    self.log_lines.append("[qq-install] ✘ apt-get -f install 超时")
+                    self.download_state["phase"] = "failed"
+                    self.download_state["message"] = "apt-get 超时"
+                    return False
+                text = (out or b"").decode("utf-8", errors="ignore")
+                for ln in text.splitlines()[-8:]:
+                    if ln.strip():
+                        self.log_lines.append(f"[qq-install] {ln.strip()}")
+
+            if is_qq_installed():
+                self.log_lines.append("[qq-install] ✔ LinuxQQ 安装成功")
+                try:
+                    deb_path.unlink()
+                except Exception:
+                    pass
+                self.download_state["phase"] = "done"
+                self.download_state["downloading"] = False
+                self.download_state["percent"] = 100
+                self.download_state["current_mirror"] = ""
+                self.download_state["message"] = "LinuxQQ 已安装"
+                return True
+            else:
+                self.log_lines.append(
+                    "[qq-install] ✘ 安装后仍未检测到 /opt/QQ/qq"
+                )
+                self.download_state["phase"] = "failed"
+                self.download_state["downloading"] = False
+                self.download_state["message"] = "LinuxQQ 安装失败"
+                return False
+        finally:
+            if fake_bin and fake_bin.exists():
+                shutil.rmtree(fake_bin, ignore_errors=True)
+
     # ==================== Linux install.sh ====================
 
     def _build_install_sh_urls(self) -> List[Tuple[str, str]]:
@@ -769,11 +1142,51 @@ class NapCatManager:
         urls.append((NAPCAT_INSTALL_SH_LEGACY, "legacy"))
         return urls
 
+    async def _backup_inner_napcat_if_needed(self) -> bool:
+        inner = self.napcat_dir / "napcat"
+        if not inner.exists():
+            return True
+        try:
+            has_content = any(inner.iterdir())
+        except Exception:
+            has_content = False
+        if not has_content:
+            return True
+
+        if self._is_new_style_install(inner) or self._is_new_style_install(self.napcat_dir):
+            self.log_lines.append(
+                f"[install] {inner} 已包含 launcher，跳过备份"
+            )
+            return True
+
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        bak = self.napcat_dir / f"napcat.bak.{ts}"
+        try:
+            shutil.move(str(inner), str(bak))
+            self.log_lines.append(
+                f"[install] ⚠ 检测到 {inner} 已存在且不为空，"
+                f"已备份为 {bak.name}"
+            )
+            return True
+        except Exception as e:
+            self.log_lines.append(f"[install] ⚠ 备份 {inner} 失败: {e}")
+            self.log_lines.append(f"[install] 尝试直接删除 {inner} ...")
+            try:
+                shutil.rmtree(inner)
+                self.log_lines.append(f"[install] ✔ 已删除 {inner}")
+                return True
+            except Exception as e2:
+                self.log_lines.append(f"[install] ✘ 删除 {inner} 也失败: {e2}")
+                self.log_lines.append("[install] 请手动执行：")
+                self.log_lines.append(f"[install]   rm -rf {inner}")
+                self.log_lines.append("[install] 或带 sudo：")
+                self.log_lines.append(f"[install]   sudo rm -rf {inner}")
+                return False
+
     async def install_linux_napcat(self) -> bool:
         self.napcat_dir.mkdir(parents=True, exist_ok=True)
         script_path = self.napcat_dir / "install.sh"
 
-        # ============ 初始化下载状态，让 WebUI 立刻显示进度面板 ============
         self._reset_download_state()
         self.download_state["downloading"] = True
         self.download_state["phase"] = "downloading"
@@ -794,6 +1207,12 @@ class NapCatManager:
             self.download_state["message"] = "系统无 sudo"
             return False
 
+        if not await self._backup_inner_napcat_if_needed():
+            self.download_state["phase"] = "failed"
+            self.download_state["downloading"] = False
+            self.download_state["message"] = "无法清理旧的 napcat 目录，请手动删除"
+            return False
+
         sh_urls = self._build_install_sh_urls()
         self.log_lines.append(f"[install] 目标目录: {self.napcat_dir}")
         self.log_lines.append(f"[install] 共 {len(sh_urls)} 个 install.sh 下载源，依次尝试")
@@ -803,14 +1222,12 @@ class NapCatManager:
         self.download_state["current_mirror"] = "下载 install.sh"
         self.download_state["message"] = "正在下载 install.sh"
 
-        # ============ 阶段 1：下载 install.sh（流式读取更新进度）============
         downloaded = False
         for idx, (url, label) in enumerate(sh_urls, 1):
             self.log_lines.append(f"[install] [{idx}/{len(sh_urls)}] 下载 install.sh: {label}")
             self.download_state["current_mirror"] = label
             self.download_state["current_index"] = idx
             try:
-                # 用 Python aiohttp 流式下载 install.sh，能实时更新进度
                 ssl_ctx = make_ssl_context(strict=False)
                 connector = aiohttp.TCPConnector(ssl=ssl_ctx)
                 async with aiohttp.ClientSession(connector=connector) as session:
@@ -845,7 +1262,6 @@ class NapCatManager:
                         self.log_lines.append(f"[install] [{idx}/{len(sh_urls)}] {label} 下载异常: {e}")
                         continue
 
-                # 校验文件
                 if script_path.exists() and script_path.stat().st_size > 100:
                     size = script_path.stat().st_size
                     self.log_lines.append(
@@ -876,8 +1292,6 @@ class NapCatManager:
         except Exception:
             pass
 
-        # ============ 阶段 2：执行 install.sh（心跳更新进度）============
-        # 切换到 extracting 阶段，前端会显示"正在解压 NapCat.Shell.zip"标题
         self.download_state["phase"] = "extracting"
         self.download_state["percent"] = 0
         self.download_state["downloaded_mb"] = 0.0
@@ -890,8 +1304,6 @@ class NapCatManager:
         stop_flag = asyncio.Event()
 
         async def _tick():
-            # 每 1 秒更新一次：current_mirror 显示运行时间，percent 假进度爬升
-            # 假进度策略：10 分钟内从 0% 爬到 95%，剩余留给收尾
             while not stop_flag.is_set():
                 try:
                     await asyncio.wait_for(stop_flag.wait(), timeout=1.0)
@@ -1027,7 +1439,7 @@ class NapCatManager:
                 root = self._find_new_style_root()
 
                 if not root:
-                    self.log_lines.append("[start] 未检测到新方案，开始安装 ...")
+                    self.log_lines.append("[start] 未检测到新方案，开始安装 NapCat ...")
                     if not await self.install_linux_napcat():
                         return False
                     root = self._find_new_style_root()
@@ -1042,14 +1454,51 @@ class NapCatManager:
                     self.log_lines.append("[start] ✘ 未配置 sudo 密码或系统无 sudo")
                     return False
 
+                if not is_qq_installed():
+                    self.log_lines.append("[start] 未检测到 LinuxQQ，尝试自动安装 ...")
+                    qq_ok = await self.ensure_linux_qq()
+                    if not qq_ok:
+                        self.log_lines.append("[start] ✘ LinuxQQ 安装失败，无法继续")
+                        self.log_lines.append("[start] 提示：可手动下载 deb 放到:")
+                        self.log_lines.append(f"[start]   {self.napcat_dir}/")
+                        self.log_lines.append("[start] 然后重试启动")
+                        return False
+                    self.log_lines.append("[start] ✔ LinuxQQ 就绪")
+
                 if not shutil.which("Xvfb"):
                     self.log_lines.append("[start] ⚠ 未检测到 Xvfb")
+
+                qq_real, qq_dir = self._find_qq_binary(root)
+                if not qq_dir:
+                    self.log_lines.append("[start] ✘ 找不到可用的 qq 命令")
+                    self.log_lines.append("[start] 诊断建议：")
+                    self.log_lines.append("[start]   ls -l /opt/QQ/qq")
+                    self.log_lines.append("[start]   ls -l /usr/bin/qq   # 若指向已删除的文件则是断链")
+                    self.log_lines.append("[start] 若 /usr/bin/qq 是断链，执行：")
+                    self.log_lines.append("[start]   sudo rm -f /usr/bin/qq")
+                    self.log_lines.append(f"[start] 或建软链：ln -sf /opt/QQ/qq {root}/qq")
+                    return False
+
+                base_path = os.environ.get("PATH", "") or \
+                    "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+                path_parts = base_path.split(":")
+                if qq_dir not in path_parts:
+                    base_path = f"{qq_dir}:{base_path}"
+
+                user_home = os.environ.get("HOME") or ""
+                if not user_home:
+                    try:
+                        import pwd
+                        user_home = pwd.getpwuid(os.getuid()).pw_dir
+                    except Exception:
+                        user_home = str(Path.home())
+
+                user_name = os.environ.get("USER") or os.environ.get("LOGNAME") or ""
 
                 fake_bin = self._build_fake_sudo("launch", env_extra)
                 if not fake_bin:
                     self.log_lines.append("[start] ✘ 创建 sudo 包装脚本失败")
                     return False
-
                 if self._launch_fake_bin and self._launch_fake_bin.exists() \
                         and self._launch_fake_bin != fake_bin:
                     try:
@@ -1058,27 +1507,25 @@ class NapCatManager:
                         pass
                 self._launch_fake_bin = fake_bin
 
-                qq_bin = shutil.which("qq")
-                if not qq_bin:
-                    for cand in [root / "QQ" / "qq", root / "qq"]:
-                        if cand.exists():
-                            link = root / "qq"
-                            if not link.exists() or not link.is_symlink():
-                                try:
-                                    if link.exists():
-                                        link.unlink()
-                                    link.symlink_to(cand)
-                                except Exception as e:
-                                    self.log_lines.append(f"[start] ⚠ 建 qq 软链失败: {e}")
-                            env_extra["PATH"] = f"{root}:{env_extra.get('PATH', os.environ.get('PATH', ''))}"
-                            self.log_lines.append(f"[start] 使用自带 qq: {cand}")
-                            break
-                else:
-                    self.log_lines.append(f"[start] 使用系统 qq: {qq_bin}")
-
+                env_extra["PATH"] = base_path
+                env_extra["HOME"] = user_home
+                if user_name:
+                    env_extra["USER"] = user_name
                 env_extra["NAPCAT_BOOTMAIN"] = str(root)
+                env_extra["DISPLAY"] = ":1"
 
-                cmd = ["sudo", "-E", "bash", "launcher.sh"]
+                cmd = [
+                    "sudo", "-E", "env",
+                    f"PATH={base_path}",
+                    f"HOME={user_home}",
+                ]
+                if user_name:
+                    cmd.append(f"USER={user_name}")
+                cmd += [
+                    f"NAPCAT_BOOTMAIN={root}",
+                    f"DISPLAY=:1",
+                    "bash", "launcher.sh",
+                ]
                 cwd = str(root)
                 creationflags = 0
 
@@ -1087,7 +1534,9 @@ class NapCatManager:
                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 except Exception:
                     pass
-                self.log_lines.append("[start] 启动命令: sudo -E bash launcher.sh")
+
+                self.log_lines.append(f"[start] qq: {qq_real}")
+                self.log_lines.append("[start] 启动命令: sudo -E env ... bash launcher.sh")
 
             self._auto_link_done = False
             self._qq_logged_in = False
@@ -1121,10 +1570,19 @@ class NapCatManager:
 
         if not await self.docker_image_present(ref):
             self.log_lines.append(f"[docker] 拉取镜像 {ref} ...")
+            self.download_state["downloading"] = True
+            self.download_state["phase"] = "downloading"
+            self.download_state["message"] = "正在拉取 Docker 镜像"
+            self.download_state["current_mirror"] = ref
             code, out = await self._docker_cmd("pull", ref, timeout=900)
+            self.download_state["downloading"] = False
             if code != 0:
                 self.log_lines.append(f"[docker] ✘ 拉取失败: {out[-200:]}")
+                self.download_state["phase"] = "failed"
                 return False
+            self.download_state["phase"] = "done"
+            self.download_state["percent"] = 100
+            self.download_state["message"] = "镜像就绪"
 
         self.docker_config_dir.mkdir(parents=True, exist_ok=True)
         self.docker_qq_dir.mkdir(parents=True, exist_ok=True)
@@ -1651,6 +2109,8 @@ class ConfigSyncer:
             "heartInterval": 30000,
             "reconnectInterval": 3000,
             "sslVerify": False,
+            "ssl": False,
+            "sslCertVerify": False,
         }]
         network["websocketClients"] = new_clients
 
