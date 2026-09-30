@@ -1,8 +1,7 @@
 # NapCat_Go
 
--一键部署与连接 NapCat 到 AstrBot 的插件。
-
--现已支持Windows/Linux双版本（Linux具体限制为Napcat安装问题）
+ -一键部署与连接 NapCat 到 AstrBot 的插件。
+ -现已支持Windows/Linux双版本（Linux具体限制为Napcat安装问题）
 
 ## *前置要求*
 
@@ -27,6 +26,7 @@
    - 读取你在 AstrBot 中已创建好的 aiocqhttp 机器人配置
    - 将反向 WS 地址写入 NapCat 的 `onebot11_*.json`
    - 重启 NapCat 使配置生效
+5. 下载源均使用官方或镜像站点下载，可以放心使用
 
 ## 常见问题
 
