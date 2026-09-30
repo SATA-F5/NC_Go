@@ -16,6 +16,7 @@ const els = {
     lastTime: $('s-last-time'),
     astrbotPath: $('s-astrbot-path'),
     napcatDir: $('s-napcat-dir'),
+    deploy: $('s-deploy'),
     guide: $('guide'),
     modal: $('config-modal'),
     toast: $('toast'),
@@ -23,7 +24,6 @@ const els = {
     logCount: $('log-count'),
     webuiDetails: $('webui-details'),
     webuiSummary: $('btn-open-webui-summary'),
-    // Download panel
     downloadPanel: $('download-panel'),
     dlTitleText: $('dl-title-text'),
     dlMirror: $('dl-mirror'),
@@ -53,8 +53,8 @@ const LOCAL_HOSTS = ['127.0.0.1', 'localhost', '0.0.0.0', '[::]', '::'];
 
 function escapeHtml(s) {
     return String(s)
-        .replace(/&/g, '&amp;').replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 function toast(message, duration = 2500, kind = '') {
@@ -90,18 +90,18 @@ function showUrlDialog(title, url, hint) {
     const dialog = document.createElement('div');
     dialog.id = 'napcat-url-dialog';
     dialog.style.cssText = `
-        position: fixed; inset: 0;
-        background: rgba(0,0,0,0.65);
-        display: flex; justify-content: center; align-items: center;
-        z-index: 3000; padding: 20px;
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.65);
+    display: flex; justify-content: center; align-items: center;
+    z-index: 3000; padding: 20px;
     `;
 
     const box = document.createElement('div');
     box.style.cssText = `
-        background: #313244; border-radius: 12px; padding: 22px;
-        width: 520px; max-width: 100%;
-        box-shadow: 0 12px 40px rgba(0,0,0,0.6);
-        color: #cdd6f4;
+    background: #313244; border-radius: 12px; padding: 22px;
+    width: 520px; max-width: 100%;
+    box-shadow: 0 12px 40px rgba(0,0,0,0.6);
+    color: #cdd6f4;
     `;
 
     const titleEl = document.createElement('div');
@@ -116,12 +116,12 @@ function showUrlDialog(title, url, hint) {
     urlBox.value = url;
     urlBox.readOnly = true;
     urlBox.style.cssText = `
-        width: 100%; min-height: 72px;
-        background: #1e1e2e; color: #f9e2af;
-        border: 1px solid #45475a; border-radius: 8px;
-        padding: 10px 12px; font-family: Consolas, monospace;
-        font-size: 12px; line-height: 1.5;
-        resize: vertical; outline: none;
+    width: 100%; min-height: 72px;
+    background: #1e1e2e; color: #f9e2af;
+    border: 1px solid #45475a; border-radius: 8px;
+    padding: 10px 12px; font-family: Consolas, monospace;
+    font-size: 12px; line-height: 1.5;
+    resize: vertical; outline: none;
     `;
 
     const btnRow = document.createElement('div');
@@ -167,9 +167,9 @@ function showUrlDialog(title, url, hint) {
         if (e.target === dialog) dialog.remove();
     });
 
-    document.body.appendChild(dialog);
-    urlBox.focus();
-    urlBox.select();
+        document.body.appendChild(dialog);
+        urlBox.focus();
+        urlBox.select();
 }
 
 function tryOpenUrl(url) {
@@ -244,7 +244,6 @@ async function refreshStatus() {
     }
 }
 
-// ---------- 下载期快速轮询 ----------
 function startFastDownloadPolling() {
     if (fastDownloadTimer) return;
     console.log('[napcat] 启动快速下载轮询 (0.5s)');
@@ -262,14 +261,13 @@ function startFastDownloadPolling() {
                     btn.classList.remove('power-on', 'power-off');
                     btn.classList.add('power-downloading');
                     els.powerLabel.textContent = ds.percent > 0
-                        ? `下载中 ${ds.percent}%`
-                        : '准备下载...';
+                    ? `下载中 ${ds.percent}%`
+                    : '准备下载...';
                 }
             } else {
                 console.log('[napcat] 下载结束，停止快速轮询');
                 clearInterval(fastDownloadTimer);
                 fastDownloadTimer = null;
-                // 立刻刷一次完整状态，让按钮恢复
                 refreshStatus();
             }
         } catch (e) {
@@ -289,18 +287,27 @@ function updateStatus(d) {
     if (!d) return;
 
     isWindows = !!d.is_windows;
+    const deployMode = d.deploy_mode || (isWindows ? 'windows' : 'native');
 
     document.querySelectorAll('.win-only').forEach(el => {
         el.style.display = isWindows ? '' : 'none';
     });
+    document.querySelectorAll('.linux-only').forEach(el => {
+        el.style.display = isWindows ? 'none' : '';
+    });
 
     if (els.subtitle) {
-        els.subtitle.textContent = isWindows
-            ? 'Windows：启动/停止 NapCat，同步 AstrBot 机器人配置'
-            : 'Linux/macOS：从 AstrBot 读取配置，写入 NapCat 的 onebot11_*.json';
+        const dm = deployMode === 'docker' ? 'Docker（容器化）'
+        : deployMode === 'windows' ? 'Windows 原生'
+        : 'Linux 本地安装';
+        els.subtitle.textContent = `部署方式：${dm} · NapCat ${d.running ? '运行中' : '未运行'}`;
     }
 
-    // Download panel
+    if (els.deploy) {
+        const dockerOk = deployMode === 'docker' ? (d.docker_available ? '' : '（未安装 Docker）') : '';
+        setText(els.deploy, deployMode.toUpperCase() + dockerOk, d.running ? 'ok' : (dockerOk ? 'err' : ''));
+    }
+
     updateDownloadPanel(d.download_state);
 
     if (isWindows) {
@@ -322,11 +329,9 @@ function updateStatus(d) {
         setText(els.webuiToken, '-', '');
     }
 
-    // ---- 启动/停止按钮：兼顾"下载中"状态 ----
     const ds = d.download_state || {};
     const isDownloading = !!ds.downloading;
 
-    // 下载刚结束，弹一次 toast
     if (lastDownloading && !isDownloading) {
         if (ds.phase === 'done') {
             toast('NapCat 下载完成，正在启动...', 2500, 'ok');
@@ -336,7 +341,6 @@ function updateStatus(d) {
     }
     lastDownloading = isDownloading;
 
-    // 下载开始 → 自动开启快速轮询
     if (isDownloading && !fastDownloadTimer) {
         startFastDownloadPolling();
     }
@@ -349,8 +353,8 @@ function updateStatus(d) {
             powerBtn.classList.add('power-downloading');
             if (els.powerLabel) {
                 els.powerLabel.textContent = ds.percent > 0
-                    ? `下载中 ${ds.percent}%`
-                    : '准备下载...';
+                ? `下载中 ${ds.percent}%`
+                : '准备下载...';
             }
         } else {
             powerBtn.disabled = false;
@@ -404,6 +408,11 @@ function updateStatus(d) {
     if ($('cfg-astrbot-path')) $('cfg-astrbot-path').value = cfg.astrbot_config_path || '';
     if ($('cfg-qq-number')) $('cfg-qq-number').value = cfg.qq_number || '';
     if ($('cfg-mirror')) $('cfg-mirror').value = cfg.napcat_download_mirror || '';
+    if ($('cfg-deploy')) $('cfg-deploy').value = cfg.deploy_mode || 'auto';
+    if ($('cfg-docker-image')) $('cfg-docker-image').value = cfg.docker_image || 'mlikiowa/napcat-docker';
+    if ($('cfg-docker-tag')) $('cfg-docker-tag').value = cfg.docker_tag || 'latest';
+    if ($('cfg-docker-container')) $('cfg-docker-container').value = cfg.docker_container_name || 'napcat-go';
+    // ★ 注意：sudo 密码框绝不回填，避免轮询覆盖用户输入
 
     updateGuide(d);
 }
@@ -495,8 +504,8 @@ function updateGuide(d) {
     if (d.astrbot_bot_found && d.napcat_config_file && d.last_sync_ok) {
         g.className = 'guide success visible';
         g.innerHTML = `
-            <div style="font-weight:600;margin-bottom:4px;">配置已同步</div>
-            <div>反向 WS：<code>ws://${escapeHtml(d.astrbot_bot_host)}:${escapeHtml(d.astrbot_bot_port)}/ws/</code></div>
+        <div style="font-weight:600;margin-bottom:4px;">配置已同步</div>
+        <div>反向 WS：<code>ws://${escapeHtml(d.astrbot_bot_host)}:${escapeHtml(d.astrbot_bot_port)}/ws/</code></div>
         `;
         return;
     }
@@ -504,8 +513,8 @@ function updateGuide(d) {
     if (!d.astrbot_bot_found) {
         g.className = 'guide visible';
         g.innerHTML = `
-            <div style="font-weight:600;margin-bottom:4px;">先在 AstrBot 创建 OneBot v11 机器人</div>
-            <div>AstrBot 左侧栏 -&gt; 机器人 -&gt; 创建机器人 -&gt; OneBot v11，端口填未被占用的（如 6199），保存后回到此处点「立即同步」。</div>
+        <div style="font-weight:600;margin-bottom:4px;">先在 AstrBot 创建 OneBot v11 机器人</div>
+        <div>AstrBot 左侧栏 -&gt; 机器人 -&gt; 创建机器人 -&gt; OneBot v11，端口填未被占用的（如 6199），保存后回到此处点「立即同步」。</div>
         `;
         return;
     }
@@ -513,8 +522,8 @@ function updateGuide(d) {
     if (!d.napcat_config_dir) {
         g.className = 'guide warn visible';
         g.innerHTML = `
-            <div style="font-weight:600;margin-bottom:4px;">未找到 NapCat 配置目录</div>
-            <div>点右上角「配置」，手动填写 NapCat 的 config 目录路径。</div>
+        <div style="font-weight:600;margin-bottom:4px;">未找到 NapCat 配置目录</div>
+        <div>点右上角「配置」，手动填写 NapCat 的 config 目录路径。</div>
         `;
         return;
     }
@@ -522,8 +531,8 @@ function updateGuide(d) {
     if (d.napcat_config_dir && !d.last_sync_ok) {
         g.className = 'guide error visible';
         g.innerHTML = `
-            <div style="font-weight:600;margin-bottom:4px;">同步失败</div>
-            <div>${escapeHtml(d.last_sync_msg || '未知错误')}</div>
+        <div style="font-weight:600;margin-bottom:4px;">同步失败</div>
+        <div>${escapeHtml(d.last_sync_msg || '未知错误')}</div>
         `;
         return;
     }
@@ -584,7 +593,6 @@ async function togglePower() {
     try {
         const d = await bridge.apiGet('status');
         const ep = d.running ? 'stop' : 'start';
-        // 点击"启动"时立刻开快速轮询，确保下载进度不漏帧
         if (ep === 'start') {
             startFastDownloadPolling();
         }
@@ -622,8 +630,8 @@ async function openWebUINewPage() {
             '打开 NapCat WebUI',
             url,
             opened
-                ? '已尝试在新标签页打开。如果没有自动弹出，请复制下面的地址粘贴到浏览器打开。'
-                : '当前环境阻止了自动弹出新窗口，请复制下面的地址，粘贴到你自己的浏览器里打开。'
+            ? '已尝试在新标签页打开。如果没有自动弹出，请复制下面的地址粘贴到浏览器打开。'
+            : '当前环境阻止了自动弹出新窗口，请复制下面的地址，粘贴到你自己的浏览器里打开。'
         );
     } catch (e) {
         console.error('[napcat] 打开 WebUI 失败:', e);
@@ -667,6 +675,11 @@ async function saveConfig() {
     const astrbotPath = $('cfg-astrbot-path').value.trim();
     const qqNumber = $('cfg-qq-number').value.trim();
     const mirror = $('cfg-mirror')?.value.trim() || '';
+    const deploy = $('cfg-deploy')?.value.trim() || 'auto';
+    const dockerImage = $('cfg-docker-image')?.value.trim() || 'mlikiowa/napcat-docker';
+    const dockerTag = $('cfg-docker-tag')?.value.trim() || 'latest';
+    const dockerContainer = $('cfg-docker-container')?.value.trim() || 'napcat-go';
+    const sudoPassword = $('cfg-sudo-password')?.value || '';
 
     try {
         const r = await bridge.apiPost('config/save', {
@@ -674,8 +687,15 @@ async function saveConfig() {
             astrbot_config_path: astrbotPath,
             qq_number: qqNumber,
             napcat_download_mirror: mirror,
+            deploy_mode: deploy,
+            docker_image: dockerImage,
+            docker_tag: dockerTag,
+            docker_container_name: dockerContainer,
+            sudo_password: sudoPassword,
         });
         closeConfig();
+        const pwEl = $('cfg-sudo-password');
+        if (pwEl) pwEl.value = '';
         await refreshStatus();
         if (r && r.sync_ok) toast('配置已保存，同步成功', 2500, 'ok');
         else if (r && r.sync_msg) toast(`已保存，同步失败: ${r.sync_msg}`, 4000, 'err');
@@ -700,8 +720,8 @@ async function scanCandidates() {
         let html = `<div style="font-size:10px;color:#6c7086;margin-bottom:6px;">找到 ${candidates.length} 个候选，点击选择：</div>`;
         candidates.forEach((c, i) => {
             html += `<div class="scan-result-item" data-dir="${escapeHtml(c.dir)}" data-idx="${i}">
-                <div class="dir">目录：${escapeHtml(c.dir)}</div>
-                <div class="file">文件：${escapeHtml(c.file_name)}</div>
+            <div class="dir">目录：${escapeHtml(c.dir)}</div>
+            <div class="file">文件：${escapeHtml(c.file_name)}</div>
             </div>`;
         });
         resultEl.innerHTML = html;
@@ -726,43 +746,43 @@ function bindEvents() {
         if (el) el.addEventListener('click', handler);
     };
 
-    bind('btn-toggle-power', togglePower);
-    bind('btn-sync', doSync);
-    bind('btn-open-webui-newpage', openWebUINewPage);
-    bind('btn-open-webui-browser', openWebUIBrowser);
-    bind('btn-restart', () => postAction('restart', '重启指令已发送'));
-    bind('btn-cleanup', async () => {
-        if (!confirm('将强制终止所有 NapCat 相关进程。继续？')) return;
-        await postAction('cleanup', '已清理残留进程');
-    });
-    bind('btn-refresh', async () => {
-        const r = await postAction('refresh');
-        if (r) toast('已重新探测', 1500, 'ok');
-    });
-    bind('btn-clear-log', clearLog);
-    bind('btn-open-config', openConfig);
-    bind('btn-config-cancel', closeConfig);
-    bind('btn-config-save', saveConfig);
-    bind('btn-scan', scanCandidates);
-
-    if (els.modal) {
-        els.modal.addEventListener('click', (e) => {
-            if (e.target === els.modal) closeConfig();
+        bind('btn-toggle-power', togglePower);
+        bind('btn-sync', doSync);
+        bind('btn-open-webui-newpage', openWebUINewPage);
+        bind('btn-open-webui-browser', openWebUIBrowser);
+        bind('btn-restart', () => postAction('restart', '重启指令已发送'));
+        bind('btn-cleanup', async () => {
+            if (!confirm('将强制终止所有 NapCat 相关进程。继续？')) return;
+            await postAction('cleanup', '已清理残留进程');
         });
-    }
+        bind('btn-refresh', async () => {
+            const r = await postAction('refresh');
+            if (r) toast('已重新探测', 1500, 'ok');
+        });
+            bind('btn-clear-log', clearLog);
+            bind('btn-open-config', openConfig);
+            bind('btn-config-cancel', closeConfig);
+            bind('btn-config-save', saveConfig);
+            bind('btn-scan', scanCandidates);
 
-    document.addEventListener('click', (e) => {
-        if (!els.webuiDetails || !els.webuiDetails.open) return;
-        if (!e.target.closest('.webui-details')) {
-            els.webuiDetails.open = false;
-        }
-    });
+            if (els.modal) {
+                els.modal.addEventListener('click', (e) => {
+                    if (e.target === els.modal) closeConfig();
+                });
+            }
 
-    document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape' && els.webuiDetails && els.webuiDetails.open) {
-            els.webuiDetails.open = false;
-        }
-    });
+            document.addEventListener('click', (e) => {
+                if (!els.webuiDetails || !els.webuiDetails.open) return;
+                if (!e.target.closest('.webui-details')) {
+                    els.webuiDetails.open = false;
+                }
+            });
+
+            document.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape' && els.webuiDetails && els.webuiDetails.open) {
+                    els.webuiDetails.open = false;
+                }
+            });
 }
 
 function main() {

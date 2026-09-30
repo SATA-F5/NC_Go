@@ -33,6 +33,37 @@
         "type": "string",
         "description": "GitHub 下载镜像（可选）",
         "default": "https://gh.zwy.one/",
-        "hint": "加速下载 NapCat.Shell.zip 的镜像前缀，失败时会自动切换其他镜像。"
+        "hint": "加速下载 NapCat.Shell.zip 的镜像前缀，失败时会自动切换其他镜像。仅 Windows 模式使用。"
+    },
+    "deploy_mode": {
+        "type": "string",
+        "description": "部署方式：auto / windows / docker / native",
+        "default": "auto",
+        "hint": "auto=自动（Windows 用原生 Shell；Linux 有 Docker 则用 Docker，否则用本地安装）。docker=Linux 容器化部署（Debian/Ubuntu/Arch 通用，推荐）；native=Linux 本地安装（NapCat-Installer，Debian/Ubuntu）。"
+    },
+    "docker_image": {
+        "type": "string",
+        "description": "NapCat Docker 镜像",
+        "default": "mlikiowa/napcat-docker",
+        "hint": "Docker 模式使用的镜像，默认官方社区镜像 mlikiowa/napcat-docker（支持 linux/amd64、linux/arm64）。国内网络可改用镜像站前缀，如 docker.1ms.run/mlikiowa/napcat-docker。"
+    },
+    "docker_tag": {
+        "type": "string",
+        "description": "NapCat Docker 镜像标签",
+        "default": "latest",
+        "hint": "如 latest 或 v4.18.28。"
+    },
+    "docker_container_name": {
+        "type": "string",
+        "description": "NapCat Docker 容器名",
+        "default": "napcat-go",
+        "hint": "Docker 模式创建/管理的容器名。"
+    },
+    "sudo_password": {
+        "type": "string",
+        "description": "Linux 本地安装时的 sudo 密码（仅 native 模式用）",
+        "default": "",
+        "secret": true,
+        "hint": "强烈建议不要在这里填写。请改用插件页面（NapCat_Go 管理器）的「配置」弹窗填写，那里会加密存储。若必须在此填写，保存后请立即清空本字段。"
     }
 }

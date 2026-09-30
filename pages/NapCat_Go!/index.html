@@ -54,12 +54,11 @@
         .btn-primary:hover { background: #74a8f5; }
         .btn-sm { padding: 4px 10px; font-size: 11px; }
 
-        /* ---------- 主布局：两列独立，不再互相拉伸 ---------- */
         .main-layout {
             display: grid;
             grid-template-columns: 1fr 1fr;
             gap: 14px;
-            align-items: start;   /* ★ 关键：左右两列各自决定高度，互不拉伸 */
+            align-items: start;
         }
         .left-column {
             display: flex;
@@ -168,7 +167,6 @@
             border-top: 1px solid #2a2b3d;
         }
 
-        /* ---------- Download panel ---------- */
         .download-panel {
             background: #45475a;
             border-left: 3px solid #89b4fa;
@@ -234,7 +232,6 @@
         .dl-info .dl-percent { color: #89b4fa; font-weight: 600; }
         .dl-info .dl-size { color: #6c7086; }
 
-        /* ---------- Status ---------- */
         .status-section-title {
             font-size: 10px;
             color: #6c7086;
@@ -323,12 +320,10 @@
             user-select: all;
         }
 
-        /* ---------- Log section：固定高度，不随左列拉伸 ---------- */
         .log-section {
             display: flex;
             flex-direction: column;
             gap: 6px;
-            /* ★ 去掉 flex: 1 / min-height: 0 —— 不再参与拉伸 */
         }
         .log-header {
             display: flex;
@@ -343,11 +338,8 @@
             background: #11111b;
             border-radius: 8px;
             padding: 10px 12px;
-            /* ★ 固定 35 行高度：11px × 1.5 = 16.5px/行 → 35×1.5em = 577.5px + 20px padding */
             height: calc(35 * 1.5em + 20px);
-            /* ★ 小屏兜底：最多不超过视口剩下的空间 */
             max-height: calc(100vh - 220px);
-            /* ★ 内容超出时只滚动，不再撑高 */
             overflow-y: auto;
             font-family: 'Consolas', 'Cascadia Mono', monospace;
             font-size: 11px;
@@ -402,7 +394,8 @@
             font-size: 11px;
             color: #a6adc8;
         }
-        .form-group input {
+        .form-group input,
+        .form-group select {
             width: 100%;
             padding: 7px 10px;
             border: 1px solid #45475a;
@@ -413,7 +406,8 @@
             outline: none;
             font-family: 'Consolas', monospace;
         }
-        .form-group input:focus { border-color: #89b4fa; }
+        .form-group input:focus,
+        .form-group select:focus { border-color: #89b4fa; }
         .form-hint {
             font-size: 10px;
             color: #6c7086;
@@ -489,7 +483,6 @@
             }
         }
         @media (max-width: 900px) {
-            /* 单列布局：日志保持 35 行，不再额外约束 */
             .main-layout {
                 grid-template-columns: 1fr;
             }
@@ -542,7 +535,6 @@
                     </details>
                 </div>
 
-                <!-- Download panel -->
                 <div class="download-panel" id="download-panel">
                     <div class="dl-header">
                         <div class="dl-title" id="dl-title-text">正在下载 NapCat.Shell.zip</div>
@@ -592,6 +584,10 @@
                         <div class="label">上次同步</div>
                         <div class="value" id="s-last-time">-</div>
                     </div>
+                    <div class="status-item">
+                        <div class="label">部署方式</div>
+                        <div class="value" id="s-deploy">-</div>
+                    </div>
                     <div class="status-item win-only">
                         <div class="label">WebUI Token</div>
                         <div class="value mono-small" id="s-webui-token">-</div>
@@ -609,7 +605,7 @@
 
                 <div class="aux-buttons">
                     <button class="btn" id="btn-restart">重启 NapCat</button>
-                    <button class="btn win-only" id="btn-cleanup">清理进程</button>
+                    <button class="btn" id="btn-cleanup">清理残留</button>
                     <button class="btn" id="btn-refresh">重新探测配置</button>
                 </div>
 
@@ -669,7 +665,46 @@
                     <label>GitHub 下载镜像（可选）</label>
                     <input type="text" id="cfg-mirror" placeholder="https://gh.zwy.one/">
                     <div class="form-hint">
-                        默认 <code>https://gh.zwy.one/</code>，失败自动回退官方。
+                        默认 <code>https://gh.zwy.one/</code>，失败自动回退官方。仅 Windows 模式使用。
+                    </div>
+                </div>
+            </div>
+
+            <div class="form-section linux-only">
+                <div class="form-section-title">Linux 部署方式</div>
+                <div class="form-group">
+                    <label>部署方式</label>
+                    <select id="cfg-deploy">
+                        <option value="auto">auto（自动：有 Docker 用 Docker，否则本地安装）</option>
+                        <option value="docker">docker（容器化，Debian/Ubuntu/Arch 通用，推荐）</option>
+                        <option value="native">native（本地安装，NapCat-Installer，Debian/Ubuntu）</option>
+                    </select>
+                    <div class="form-hint">
+                        <b>docker</b>：无需装 QQ、无需 root，发行版无关，最省心。<b>native</b>：需要 xvfb，仅 Debian/Ubuntu/CentOS。
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Docker 镜像</label>
+                    <input type="text" id="cfg-docker-image" placeholder="mlikiowa/napcat-docker">
+                    <div class="form-hint">
+                        默认 <code>mlikiowa/napcat-docker</code>。国内网络可换成镜像站前缀，如
+                        <code>docker.1ms.run/mlikiowa/napcat-docker</code>。
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>镜像标签（Tag）</label>
+                    <input type="text" id="cfg-docker-tag" placeholder="latest">
+                </div>
+                <div class="form-group">
+                    <label>容器名</label>
+                    <input type="text" id="cfg-docker-container" placeholder="napcat-go">
+                </div>
+                <div class="form-group">
+                    <label>sudo 密码（仅本地安装用）</label>
+                    <input type="password" id="cfg-sudo-password" placeholder="留空则不自动提权">
+                    <div class="form-hint">
+                        native 模式装系统依赖(xvfb 等)需要 sudo。桌面环境会优先弹原生密码框；
+                        无头服务器在此填一次密码，插件自动提权。<b>密码经本机密钥加密后落盘，仅本机可解。</b>
                     </div>
                 </div>
             </div>
