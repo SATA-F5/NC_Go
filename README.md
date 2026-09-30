@@ -1,7 +1,8 @@
 # NapCat_Go
 
-一键部署与连接 NapCat 到 AstrBot 的插件。
-现已支持Windows/Linux双版本（Linux具体限制为Napcat安装问题）
+-一键部署与连接 NapCat 到 AstrBot 的插件。
+
+-现已支持Windows/Linux双版本（Linux具体限制为Napcat安装问题）
 
 ## *前置要求*
 
