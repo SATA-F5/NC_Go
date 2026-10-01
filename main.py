@@ -32,7 +32,7 @@ except ImportError:
 
 from .pulid_api import NapCatAPI
 
-PLUGIN_CODE_VERSION = "2026-10-01-v62-clean-qq-urls"
+PLUGIN_CODE_VERSION = "2026-10-01-v65-sudo-kill-remnants"
 PLUGIN_NAME = "pulid_napcat_go_to_astrbot"
 CONFIG_VERSION = 4
 
@@ -529,6 +529,29 @@ class NapCatManager:
         if self._launched_pids:
             kill_pids(self._launched_pids)
             self._launched_pids.clear()
+
+    def _sudo_pkill(self, pattern: str, sig: str = "KILL"):
+        """以 root 杀进程。native 模式下 NapCat/Xvfb/qq 是 root 跑的，
+        astbot 用户普通 kill 不动，必须 sudo。密码经 stdin 喂一次。"""
+        pw = (self.plugin.config.get("sudo_password", "") or "").strip()
+        if IS_WINDOWS or not pw or not shutil.which("sudo"):
+            return
+        try:
+            subprocess.run(
+                ["sudo", "-S", "pkill", f"-{sig}", "-f", pattern],
+                input=(pw + "\n").encode(),
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15,
+            )
+        except Exception:
+            pass
+
+    def _kill_root_remnants(self):
+        """对 root 残留进程做 TERM→KILL 两轮补刀（只匹配本插件启动的进程）。"""
+        patterns = ["napcat\\.mjs", "launcher\\.sh", "Xvfb :1"]
+        for sig in ("TERM", "KILL"):
+            for pat in patterns:
+                self._sudo_pkill(pat, sig)
+            time.sleep(1.0)
 
     def _reset_download_state(self):
         self.download_state.update({
@@ -1495,28 +1518,21 @@ class NapCatManager:
 
                 user_name = os.environ.get("USER") or os.environ.get("LOGNAME") or ""
 
-                fake_bin = self._build_fake_sudo("launch", env_extra)
-                if not fake_bin:
-                    self.log_lines.append("[start] ✘ 创建 sudo 包装脚本失败")
-                    return False
-                if self._launch_fake_bin and self._launch_fake_bin.exists() \
-                        and self._launch_fake_bin != fake_bin:
-                    try:
-                        shutil.rmtree(self._launch_fake_bin, ignore_errors=True)
-                    except Exception:
-                        pass
-                self._launch_fake_bin = fake_bin
-
-                env_extra["PATH"] = base_path
+                # 启动路径 sudo 只调用一次（外层那个）。直接 sudo -S + Python 往 stdin
+                # 写一次密码即可；不用 PATH 劫持 wrapper——无 tty 守护进程里那套太脆弱
+                # （printf 管道 EOF / requiretty 会偶发 "A terminal is required"）。
+                launch_path = base_path
+                env_extra["PATH"] = launch_path
                 env_extra["HOME"] = user_home
                 if user_name:
                     env_extra["USER"] = user_name
                 env_extra["NAPCAT_BOOTMAIN"] = str(root)
                 env_extra["DISPLAY"] = ":1"
 
+                real_sudo = shutil.which("sudo") or "sudo"
                 cmd = [
-                    "sudo", "-E", "env",
-                    f"PATH={base_path}",
+                    real_sudo, "-S", "-E", "env",
+                    f"PATH={launch_path}",
                     f"HOME={user_home}",
                 ]
                 if user_name:
@@ -1544,9 +1560,19 @@ class NapCatManager:
             launch_env.update(env_extra)
             try:
                 self.process = await asyncio.create_subprocess_exec(
-                    *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+                    *cmd,
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
                     cwd=cwd, creationflags=creationflags, env=launch_env,
                 )
+                # sudo -S：把密码写进 stdin 一次，然后关闭
+                if pw:
+                    try:
+                        self.process.stdin.write((pw + "\n").encode())
+                        await self.process.stdin.drain()
+                        self.process.stdin.close()
+                    except Exception:
+                        pass
             except Exception as e:
                 self.log_lines.append(f"[start] 启动失败: {e}")
                 return False
@@ -1738,6 +1764,8 @@ class NapCatManager:
                     pass
                 self._log_task = None
             self._cleanup_processes()
+            # native 模式下 NapCat/Xvfb/qq 以 root 运行，普通 kill 无效，用 sudo 补刀
+            self._kill_root_remnants()
             try:
                 subprocess.run(["pkill", "-f", "Xvfb :1"], timeout=5,
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -2579,3 +2607,4 @@ class NapCatGoPlugin(Star):
         if hasattr(self.context, "plugin_dir"):
             return Path(self.context.plugin_dir)
         return Path(__file__).parent
+#（注：内容由AI生成）
