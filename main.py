@@ -32,7 +32,7 @@ except ImportError:
 
 from .pulid_api import NapCatAPI
 
-PLUGIN_CODE_VERSION = "2026-10-01-v65-sudo-kill-remnants"
+PLUGIN_CODE_VERSION = "2026-10-02-v70-github-qq-mirror"
 PLUGIN_NAME = "pulid_napcat_go_to_astrbot"
 CONFIG_VERSION = 4
 
@@ -51,10 +51,25 @@ NAPCAT_MIRROR_CANDIDATES = [
     "https://ghfast.top/",
 ]
 
-# LinuxQQ deb 下载源
-# 目前唯一验证可用的：GitHub zydou/QQ-Linux（会在下载时自动套 ghproxy 前缀）
+# ============ QQ 版本兼容性 ============
+# NapCat PacketBackend 对 Linux QQ build 号的限制。
+# 历史经验：
+#   3.2.22-251203 -> build 251203 超上限（QQ 服务端也会提示版本过低）
+#   3.2.29-260528 -> build 260528 落在旧范围 [28498, 36580] 内
+#   3.2.32-52194  -> build 52194 超出旧范围上限
+#   3.2.34-53644  -> build 53644 超出旧范围上限，但从 SATA-F5/NC_Go 分发的
+#                    3.2.34 版本实际可用，因此这里放宽上限。
+# 如某天 NapCat 对新版 QQ 又拒绝，把 MAX 调回 36580 即可恢复严格模式。
+NAPCAT_SUPPORTED_QQ_MIN = 28498
+NAPCAT_SUPPORTED_QQ_MAX = 999999
+RECOMMENDED_LINUXQQ_VERSION = "3.2.34"
+
+# LinuxQQ deb 下载源（按顺序尝试，GitHub 链接会自动套 NAPCAT_MIRROR_CANDIDATES 的全部加速前缀）
 LINUXQQ_DEB_URLS = [
-    "https://github.com/zydou/QQ-Linux/releases/download/3.2.22-251203/QQ-3.2.22-251203-amd64.deb",
+    # 主源：SATA-F5/NC_Go 仓库托管的 3.2.34 amd64 deb
+    "https://github.com/SATA-F5/NC_Go/releases/download/data-v0.0.0/QQ_3.2.34_Linux_amd64.deb",
+    # 兜底：Rodert/qq-versions 归档的 3.2.28 amd64 deb
+    "https://github.com/Rodert/qq-versions/releases/download/qq-packages-20260429/QQ_3.2.28_260429_amd64_01.deb",
 ]
 
 IS_WINDOWS = platform.system() == "Windows"
@@ -87,6 +102,10 @@ DEFAULT_CONFIG = {
 }
 
 CREATE_NO_WINDOW = 0x08000000
+
+# 残留进程扫描/清理匹配模式（覆盖 native 模式下的 root 进程）
+REMNANT_PATTERN = "napcat|NapCat|Xvfb|launcher.sh|/opt/QQ"
+REMNANT_SCAN_RE = re.compile(r"napcat|NapCat|Xvfb|launcher\.sh|/opt/QQ", re.IGNORECASE)
 
 
 def _read_os_release() -> Dict[str, str]:
@@ -344,6 +363,103 @@ def is_qq_installed() -> bool:
     return False
 
 
+# ============ Linux QQ 版本检测 ============
+
+def get_linux_qq_version() -> Optional[str]:
+    """读取已安装 LinuxQQ 的完整版本号，例如 '3.2.34-53644'。"""
+    if IS_WINDOWS:
+        return None
+
+    try:
+        r = subprocess.run(
+            ["dpkg-query", "-W", "-f=${Version}", "linuxqq"],
+            capture_output=True, text=True, timeout=10,
+            stdin=subprocess.DEVNULL,
+        )
+        if r.returncode == 0 and (r.stdout or "").strip():
+            return r.stdout.strip()
+    except Exception:
+        pass
+
+    for qq_bin in ("/opt/QQ/qq", "/usr/bin/qq"):
+        try:
+            if not os.path.exists(qq_bin):
+                continue
+            r = subprocess.run(
+                [qq_bin, "--version"],
+                capture_output=True, text=True, timeout=10,
+                stdin=subprocess.DEVNULL,
+            )
+            out = (r.stdout or "") + (r.stderr or "")
+            m = re.search(r"(\d+\.\d+\.\d+)[-_](\d+)", out)
+            if m:
+                return f"{m.group(1)}-{m.group(2)}"
+        except Exception:
+            continue
+    return None
+
+
+def _parse_build_from_version(v: Optional[str]) -> Optional[int]:
+    """从任意版本字符串里提取末尾数字 build 号。"""
+    if not v:
+        return None
+    m = re.search(r"[-_](\d+)$", v)
+    if m:
+        return int(m.group(1))
+    parts = re.split(r"[-_.]", v)
+    for p in reversed(parts):
+        if p.isdigit():
+            return int(p)
+    return None
+
+
+def get_linux_qq_build_code() -> Optional[int]:
+    """从已安装版本号里提取 build 号。"""
+    return _parse_build_from_version(get_linux_qq_version())
+
+
+def is_linux_qq_version_compatible() -> bool:
+    """检查当前 LinuxQQ 的 build 号是否在 NapCat PacketBackend 支持范围内。"""
+    code = get_linux_qq_build_code()
+    if code is None:
+        return False
+    return NAPCAT_SUPPORTED_QQ_MIN <= code <= NAPCAT_SUPPORTED_QQ_MAX
+
+
+def probe_deb_version(deb_path: Path) -> Optional[str]:
+    """用 dpkg-deb 从 deb 包内部读取 Version 字段。
+
+    返回例如 '3.2.34-53644'。读取失败返回 None。
+    """
+    try:
+        r = subprocess.run(
+            ["dpkg-deb", "-f", str(deb_path), "Version"],
+            capture_output=True, text=True, timeout=20,
+            stdin=subprocess.DEVNULL,
+        )
+        if r.returncode == 0:
+            v = (r.stdout or "").strip()
+            if v:
+                return v
+    except Exception:
+        pass
+    return None
+
+
+def is_deb_build_compatible(deb_path: Path) -> Tuple[bool, Optional[str], Optional[int]]:
+    """检查一个 deb 包内部的 build 号是否在支持范围内。
+
+    返回 (ok, version_str, build_code)。
+    """
+    v = probe_deb_version(deb_path)
+    if not v:
+        return False, None, None
+    code = _parse_build_from_version(v)
+    if code is None:
+        return False, v, None
+    return (NAPCAT_SUPPORTED_QQ_MIN <= code <= NAPCAT_SUPPORTED_QQ_MAX), v, code
+
+
 def list_pids_by_name(name: str) -> Set[int]:
     pids: Set[int] = set()
     if IS_WINDOWS:
@@ -530,9 +646,9 @@ class NapCatManager:
             kill_pids(self._launched_pids)
             self._launched_pids.clear()
 
-    def _sudo_pkill(self, pattern: str, sig: str = "KILL"):
-        """以 root 杀进程。native 模式下 NapCat/Xvfb/qq 是 root 跑的，
-        astbot 用户普通 kill 不动，必须 sudo。密码经 stdin 喂一次。"""
+    # ============== sudo / 残留进程处理 ==============
+
+    def _sudo_pkill(self, pattern: str, sig: str = "KILL") -> None:
         pw = (self.plugin.config.get("sudo_password", "") or "").strip()
         if IS_WINDOWS or not pw or not shutil.which("sudo"):
             return
@@ -545,13 +661,113 @@ class NapCatManager:
         except Exception:
             pass
 
-    def _kill_root_remnants(self):
-        """对 root 残留进程做 TERM→KILL 两轮补刀（只匹配本插件启动的进程）。"""
-        patterns = ["napcat\\.mjs", "launcher\\.sh", "Xvfb :1"]
-        for sig in ("TERM", "KILL"):
-            for pat in patterns:
-                self._sudo_pkill(pat, sig)
+    def _sudo_kill_pids(self, pids: List[int], sig: str = "KILL") -> None:
+        pw = (self.plugin.config.get("sudo_password", "") or "").strip()
+        if IS_WINDOWS or not pw or not shutil.which("sudo") or not pids:
+            return
+        try:
+            subprocess.run(
+                ["sudo", "-S", "kill", f"-{sig}", *[str(p) for p in pids]],
+                input=(pw + "\n").encode(),
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15,
+            )
+        except Exception:
+            pass
+
+    def _list_remnant_pids(self) -> List[Tuple[int, int, str, str]]:
+        if IS_WINDOWS:
+            return []
+        try:
+            r = subprocess.run(
+                ["ps", "-eo", "pid,ppid,stat,args"],
+                capture_output=True, text=True, timeout=10,
+                stdin=subprocess.DEVNULL,
+            )
+            if r.returncode != 0:
+                return []
+        except Exception:
+            return []
+
+        me = os.getpid()
+        out: List[Tuple[int, int, str, str]] = []
+        for line in r.stdout.splitlines()[1:]:
+            line = line.rstrip()
+            if not line.strip():
+                continue
+            parts = line.split(None, 3)
+            if len(parts) < 4:
+                continue
+            try:
+                pid = int(parts[0])
+                ppid = int(parts[1])
+            except ValueError:
+                continue
+            stat = parts[2]
+            args = parts[3]
+            if pid == me:
+                continue
+            if "grep" in args or args.startswith("ps ") or " ps -eo" in args:
+                continue
+            if REMNANT_SCAN_RE.search(args):
+                out.append((pid, ppid, stat, args))
+        return out
+
+    def _kill_root_remnants(self) -> None:
+        if IS_WINDOWS:
+            return
+        pw = (self.plugin.config.get("sudo_password", "") or "").strip()
+        if not pw or not shutil.which("sudo"):
+            return
+
+        self.log_lines.append("[stop] 开始清理所有 NapCat/QQ/Xvfb 残留进程 ...")
+
+        for attempt in range(1, 4):
+            self._sudo_pkill(REMNANT_PATTERN, "KILL")
             time.sleep(1.0)
+
+            rems = self._list_remnant_pids()
+            if not rems:
+                self.log_lines.append(
+                    f"[stop] ✔ 残留进程已清理干净（第 {attempt} 轮）"
+                )
+                return
+
+            alive = [(p, pp, st, ar) for (p, pp, st, ar) in rems if "Z" not in st]
+            zombies = [(p, pp, st, ar) for (p, pp, st, ar) in rems if "Z" in st]
+
+            self.log_lines.append(
+                f"[stop] ⚠ 第 {attempt}/3 轮仍有残留："
+                f"活进程 {[p for p, _, _, _ in alive]}，"
+                f"僵尸 {[p for p, _, _, _ in zombies]}"
+            )
+
+            if alive:
+                self._sudo_kill_pids([p for p, _, _, _ in alive], "KILL")
+
+            for _pid, ppid, _stat, _args in zombies:
+                if ppid and ppid > 1:
+                    self._sudo_kill_pids([ppid], "KILL")
+
+            time.sleep(1.0)
+
+        rems = self._list_remnant_pids()
+        if not rems:
+            self.log_lines.append("[stop] ✔ 残留进程已清理干净")
+            return
+
+        alive = [(p, pp, st, ar) for (p, pp, st, ar) in rems if "Z" not in st]
+        zombies = [(p, pp, st, ar) for (p, pp, st, ar) in rems if "Z" in st]
+        if zombies and not alive:
+            self.log_lines.append(
+                f"[stop] ⚠ 仅剩僵尸进程 {[p for p, _, _, _ in zombies]}，"
+                f"kill -9 无效；等父进程回收或重启 AstrBot 即可"
+            )
+        else:
+            self.log_lines.append(
+                f"[stop] ✘ 残留进程清理失败："
+                f"活进程 {[p for p, _, _, _ in alive]}，"
+                f"僵尸 {[p for p, _, _, _ in zombies]}"
+            )
 
     def _reset_download_state(self):
         self.download_state.update({
@@ -893,10 +1109,6 @@ class NapCatManager:
             return False
 
     def _build_linuxqq_candidate_urls(self) -> List[Tuple[str, str]]:
-        """展开 LINUXQQ_DEB_URLS 为带镜像的候选列表。
-        - GitHub Release 链接：套 ghproxy 前缀，每个镜像生成一条（用户配置的镜像优先）
-        - 其他链接：直接加
-        """
         candidates: List[Tuple[str, str]] = []
         seen = set()
 
@@ -905,7 +1117,6 @@ class NapCatManager:
                 seen.add(u)
                 candidates.append((u, label))
 
-        # 用户配置的镜像优先
         user_mirror = (self.plugin.config.get("napcat_download_mirror") or "").strip()
         mirror_order: List[str] = []
         if user_mirror:
@@ -923,12 +1134,103 @@ class NapCatManager:
                 add(raw, "qq-cdn")
         return candidates
 
+    async def _purge_linuxqq(self) -> None:
+        pw = (self.plugin.config.get("sudo_password", "") or "").strip()
+        if not pw or not shutil.which("sudo"):
+            return
+        env = {**os.environ}
+        fake_bin = self._build_fake_sudo("purgeqq", env)
+        try:
+            for args in (["dpkg", "-r", "linuxqq"], ["dpkg", "--purge", "linuxqq"]):
+                self.log_lines.append(f"[qq-compat] 执行: sudo {' '.join(args)}")
+                try:
+                    proc = await asyncio.create_subprocess_exec(
+                        "sudo", *args,
+                        stdin=asyncio.subprocess.DEVNULL,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.STDOUT,
+                        env=env,
+                    )
+                    try:
+                        out, _ = await asyncio.wait_for(proc.communicate(), timeout=180)
+                        text = (out or b"").decode("utf-8", errors="ignore")
+                        for ln in text.splitlines()[-5:]:
+                            if ln.strip():
+                                self.log_lines.append(f"[qq-compat] {ln.strip()}")
+                    except asyncio.TimeoutError:
+                        try:
+                            proc.kill()
+                        except Exception:
+                            pass
+                        self.log_lines.append("[qq-compat] ⚠ dpkg 卸载超时")
+                except Exception as e:
+                    self.log_lines.append(f"[qq-compat] ⚠ dpkg 卸载异常: {e}")
+        finally:
+            if fake_bin and fake_bin.exists():
+                shutil.rmtree(fake_bin, ignore_errors=True)
+
+    async def ensure_linux_qq_compatible(self) -> bool:
+        cur_ver = get_linux_qq_version()
+        cur_code = get_linux_qq_build_code()
+
+        if is_qq_installed() and is_linux_qq_version_compatible():
+            self.log_lines.append(
+                f"[qq-compat] ✔ 当前 QQ {cur_ver} (build {cur_code}) "
+                f"在支持范围 [{NAPCAT_SUPPORTED_QQ_MIN}, {NAPCAT_SUPPORTED_QQ_MAX}] 内，跳过"
+            )
+            return True
+
+        if is_qq_installed():
+            self.log_lines.append(
+                f"[qq-compat] ⚠ 当前 QQ {cur_ver} (build {cur_code}) 不兼容："
+                f"PacketBackend 要求 build ∈ [{NAPCAT_SUPPORTED_QQ_MIN}, {NAPCAT_SUPPORTED_QQ_MAX}]"
+            )
+            self.log_lines.append(
+                f"[qq-compat] 将自动卸载并安装推荐版本 {RECOMMENDED_LINUXQQ_VERSION}"
+            )
+            await self._purge_linuxqq()
+
+            if is_qq_installed():
+                self.log_lines.append(
+                    "[qq-compat] ⚠ purge 后仍检测到 QQ，可能卸载失败，继续尝试安装"
+                )
+        else:
+            self.log_lines.append("[qq-compat] 未检测到 LinuxQQ，准备安装推荐版本 ...")
+
+        for stale in list(self.napcat_dir.glob("linuxqq*.deb")) + \
+                     list(self.napcat_dir.glob("QQ*.deb")):
+            try:
+                self.log_lines.append(f"[qq-compat] 移除旧 deb 缓存: {stale.name}")
+                stale.unlink()
+            except Exception:
+                pass
+
+        ok = await self.ensure_linux_qq()
+        if not ok:
+            return False
+
+        new_ver = get_linux_qq_version()
+        new_code = get_linux_qq_build_code()
+        if is_linux_qq_version_compatible():
+            self.log_lines.append(
+                f"[qq-compat] ✔ 安装完成，当前 QQ {new_ver} (build {new_code}) 已兼容"
+            )
+            return True
+        self.log_lines.append(
+            f"[qq-compat] ✘ 安装后 QQ {new_ver} (build {new_code}) 仍不兼容，"
+            f"请手动下载 build ∈ [{NAPCAT_SUPPORTED_QQ_MIN}, {NAPCAT_SUPPORTED_QQ_MAX}] "
+            f"的 deb 放到: {self.napcat_dir}/"
+        )
+        return False
+
     async def ensure_linux_qq(self) -> bool:
         if is_qq_installed():
             self.log_lines.append("[qq-install] ✔ LinuxQQ 已安装，跳过")
             return True
 
-        self.log_lines.append("[qq-install] 未检测到 LinuxQQ，开始自动安装 ...")
+        self.log_lines.append(
+            f"[qq-install] 开始安装 LinuxQQ（目标版本 {RECOMMENDED_LINUXQQ_VERSION}）..."
+        )
 
         pw = (self.plugin.config.get("sudo_password", "") or "").strip()
         if not pw:
@@ -951,19 +1253,26 @@ class NapCatManager:
         manual = list(self.napcat_dir.glob("linuxqq*.deb")) + \
                  list(self.napcat_dir.glob("QQ*.deb"))
         if manual:
-            try:
-                for m in manual:
-                    if await self._validate_deb(m):
-                        deb_path = m
-                        self.log_lines.append(f"[qq-install] 使用本地 deb: {deb_path}")
-                        downloaded = True
-                        break
-                    else:
-                        self.log_lines.append(
-                            f"[qq-install] ⚠ 本地 deb 无效: {m}，忽略"
-                        )
-            except Exception:
-                pass
+            for m in manual:
+                if not await self._validate_deb(m):
+                    self.log_lines.append(
+                        f"[qq-install] ⚠ 本地 deb 无效: {m}，忽略"
+                    )
+                    continue
+                ok_build, ver_str, build_code = is_deb_build_compatible(m)
+                if ok_build:
+                    deb_path = m
+                    self.log_lines.append(
+                        f"[qq-install] ✔ 使用本地 deb: {deb_path} "
+                        f"(version={ver_str}, build={build_code})"
+                    )
+                    downloaded = True
+                    break
+                else:
+                    self.log_lines.append(
+                        f"[qq-install] ⚠ 本地 deb 的 build 不兼容，跳过: "
+                        f"{m.name} (version={ver_str}, build={build_code})"
+                    )
 
         if not downloaded:
             candidates = self._build_linuxqq_candidate_urls()
@@ -1015,9 +1324,28 @@ class NapCatManager:
                         pass
                     continue
 
+                ok_build, ver_str, build_code = is_deb_build_compatible(deb_path)
+                if not ok_build:
+                    if ver_str is None:
+                        self.log_lines.append(
+                            f"[qq-install] [{idx}/{total_urls}] ✘ 无法读取 deb 版本，换下一个"
+                        )
+                    else:
+                        self.log_lines.append(
+                            f"[qq-install] [{idx}/{total_urls}] ✘ deb 内 build 不兼容，"
+                            f"跳过: version={ver_str} build={build_code} "
+                            f"(要求 ∈ [{NAPCAT_SUPPORTED_QQ_MIN}, {NAPCAT_SUPPORTED_QQ_MAX}])"
+                        )
+                    try:
+                        deb_path.unlink()
+                    except Exception:
+                        pass
+                    continue
+
                 size_mb = deb_path.stat().st_size / 1024 / 1024
                 self.log_lines.append(
-                    f"[qq-install] [{idx}/{total_urls}] ✔ 下载成功 ({size_mb:.1f} MB)"
+                    f"[qq-install] [{idx}/{total_urls}] ✔ 下载成功 "
+                    f"({size_mb:.1f} MB, version={ver_str}, build={build_code})"
                 )
                 downloaded = True
                 break
@@ -1026,17 +1354,19 @@ class NapCatManager:
 
         if not downloaded:
             self.log_lines.append(
-                "[qq-install] ✘ 所有 LinuxQQ 下载源均失败。"
-                "请手动下载 deb 放到: " + str(self.napcat_dir)
+                "[qq-install] ✘ 所有 LinuxQQ 下载源均失败或均不兼容。"
+                "请手动下载 build 号 ∈ ["
+                f"{NAPCAT_SUPPORTED_QQ_MIN}, {NAPCAT_SUPPORTED_QQ_MAX}] 的 deb 放到: "
+                + str(self.napcat_dir)
             )
             self.log_lines.append(
                 "[qq-install] 手动下载地址（浏览器打开，任选其一）："
             )
             self.log_lines.append(
-                "[qq-install]   https://im.qq.com/linuxqq/index.shtml"
+                "[qq-install]   https://github.com/SATA-F5/NC_Go/releases"
             )
             self.log_lines.append(
-                "[qq-install]   https://github.com/zydou/QQ-Linux/releases"
+                "[qq-install]   https://github.com/Rodert/qq-versions/releases"
             )
             self.download_state["phase"] = "failed"
             self.download_state["message"] = "LinuxQQ 下载失败"
@@ -1125,7 +1455,11 @@ class NapCatManager:
                         self.log_lines.append(f"[qq-install] {ln.strip()}")
 
             if is_qq_installed():
-                self.log_lines.append("[qq-install] ✔ LinuxQQ 安装成功")
+                installed_ver = get_linux_qq_version()
+                installed_code = get_linux_qq_build_code()
+                self.log_lines.append(
+                    f"[qq-install] ✔ LinuxQQ 安装成功: {installed_ver} (build {installed_code})"
+                )
                 try:
                     deb_path.unlink()
                 except Exception:
@@ -1477,16 +1811,20 @@ class NapCatManager:
                     self.log_lines.append("[start] ✘ 未配置 sudo 密码或系统无 sudo")
                     return False
 
-                if not is_qq_installed():
-                    self.log_lines.append("[start] 未检测到 LinuxQQ，尝试自动安装 ...")
-                    qq_ok = await self.ensure_linux_qq()
-                    if not qq_ok:
-                        self.log_lines.append("[start] ✘ LinuxQQ 安装失败，无法继续")
-                        self.log_lines.append("[start] 提示：可手动下载 deb 放到:")
-                        self.log_lines.append(f"[start]   {self.napcat_dir}/")
-                        self.log_lines.append("[start] 然后重试启动")
-                        return False
-                    self.log_lines.append("[start] ✔ LinuxQQ 就绪")
+                qq_ok = await self.ensure_linux_qq_compatible()
+                if not qq_ok:
+                    self.log_lines.append("[start] ✘ LinuxQQ 版本不兼容或安装失败，无法继续")
+                    self.log_lines.append("[start] 提示：可手动下载兼容版本 deb 放到:")
+                    self.log_lines.append(f"[start]   {self.napcat_dir}/")
+                    self.log_lines.append(
+                        f"[start] 兼容 build 范围: [{NAPCAT_SUPPORTED_QQ_MIN}, {NAPCAT_SUPPORTED_QQ_MAX}]"
+                    )
+                    self.log_lines.append("[start] 然后重试启动")
+                    return False
+                self.log_lines.append(
+                    f"[start] ✔ LinuxQQ 就绪: {get_linux_qq_version()} "
+                    f"(build {get_linux_qq_build_code()})"
+                )
 
                 if not shutil.which("Xvfb"):
                     self.log_lines.append("[start] ⚠ 未检测到 Xvfb")
@@ -1518,9 +1856,6 @@ class NapCatManager:
 
                 user_name = os.environ.get("USER") or os.environ.get("LOGNAME") or ""
 
-                # 启动路径 sudo 只调用一次（外层那个）。直接 sudo -S + Python 往 stdin
-                # 写一次密码即可；不用 PATH 劫持 wrapper——无 tty 守护进程里那套太脆弱
-                # （printf 管道 EOF / requiretty 会偶发 "A terminal is required"）。
                 launch_path = base_path
                 env_extra["PATH"] = launch_path
                 env_extra["HOME"] = user_home
@@ -1565,7 +1900,6 @@ class NapCatManager:
                     stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
                     cwd=cwd, creationflags=creationflags, env=launch_env,
                 )
-                # sudo -S：把密码写进 stdin 一次，然后关闭
                 if pw:
                     try:
                         self.process.stdin.write((pw + "\n").encode())
@@ -1763,14 +2097,10 @@ class NapCatManager:
                 except asyncio.CancelledError:
                     pass
                 self._log_task = None
+
             self._cleanup_processes()
-            # native 模式下 NapCat/Xvfb/qq 以 root 运行，普通 kill 无效，用 sudo 补刀
             self._kill_root_remnants()
-            try:
-                subprocess.run(["pkill", "-f", "Xvfb :1"], timeout=5,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            except Exception:
-                pass
+
             if self._launch_fake_bin and self._launch_fake_bin.exists():
                 try:
                     shutil.rmtree(self._launch_fake_bin, ignore_errors=True)
@@ -2275,6 +2605,19 @@ class NapCatGoPlugin(Star):
         d["napcat_port"] = self.manager.napcat_port
         d["download_state"] = dict(self.manager.download_state)
         d["log_count"] = len(self.manager.log_lines)
+
+        if IS_LINUX:
+            d["qq_version"] = get_linux_qq_version()
+            d["qq_build"] = get_linux_qq_build_code()
+            d["qq_version_compatible"] = is_linux_qq_version_compatible()
+            d["qq_supported_build_min"] = NAPCAT_SUPPORTED_QQ_MIN
+            d["qq_supported_build_max"] = NAPCAT_SUPPORTED_QQ_MAX
+            d["qq_recommended_version"] = RECOMMENDED_LINUXQQ_VERSION
+        else:
+            d["qq_version"] = None
+            d["qq_build"] = None
+            d["qq_version_compatible"] = None
+
         try:
             root = self.manager._find_new_style_root()
             d["new_style_root"] = str(root) if root else None
@@ -2575,6 +2918,12 @@ class NapCatGoPlugin(Star):
         lines.append(f"deploy_mode: {self.deploy_mode}")
         if IS_LINUX:
             lines.append(f"distro: {_detect_distro_family()}")
+            lines.append(f"QQ version: {get_linux_qq_version() or '(未安装)'}")
+            lines.append(f"QQ build: {get_linux_qq_build_code()}")
+            lines.append(
+                f"QQ compatible: {'yes' if is_linux_qq_version_compatible() else 'NO'} "
+                f"(需要 build ∈ [{NAPCAT_SUPPORTED_QQ_MIN}, {NAPCAT_SUPPORTED_QQ_MAX}])"
+            )
             try:
                 root = self.manager._find_new_style_root()
                 lines.append(f"new_style_root: {root or '(未找到)'}")
